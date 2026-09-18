@@ -2,11 +2,11 @@
 
 ## Application overview
 
-Activeso is a Go package that provides an active record-like persistence layer for application-defined Go types, backed by Turso's SQLite-compatible database. It aims to offer ergonomic model creation, querying, updates, and deletion while keeping database access explicit and lightweight.
+ActiveSo is a Go package that provides an active record-like persistence layer for application-defined Go types, backed by Turso's SQLite-compatible database. It aims to offer ergonomic model creation, querying, updates, and deletion while keeping database access explicit and lightweight.
 
 ## Data model and database
 
-Activeso is built specifically to be used with Turso, an in-process SQLite-compatible database written in Rust.
+ActiveSo is built specifically to be used with Turso, an in-process SQLite-compatible database written in Rust.
 
 ## Project skills
 
@@ -29,6 +29,10 @@ Do not leave the initialization section as a comment-only placeholder.
 Only declare variables later when tighter scope is intentional (for example inside a branch/loop for correctness or clarity).
 
 Keep comments practical and current whenever behavior changes.
+
+## Code formatting
+
+Use tabs for indentation in all code. Do not use spaces for indentation. Run `gofmt` on every Go source file after editing it; do not manually override its tab-based indentation.
 
 ## Human approval requirement
 
