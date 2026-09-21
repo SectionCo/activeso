@@ -34,6 +34,13 @@ type foreignKeyCity struct {
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(id)"`
 }
 
+type foreignKeySharedPrimaryKeyCity struct {
+	Record
+
+	RegionID string `db:"region_id" activeso:"primary_key,belongs_to=regions(id)"`
+	Name     string `db:"name"`
+}
+
 type indexedCity struct {
 	Record
 
@@ -577,6 +584,42 @@ func TestAutoMigrateForeignKey(t *testing.T) {
 	}
 	if _, err := cityModel.Create(ctx, foreignKeyCity{ID: "unknown", Name: "Unknown", RegionID: "missing"}); err == nil {
 		t.Fatal("Create() accepted a missing belongs_to target")
+	}
+}
+
+// TestAutoMigrateSharedPrimaryKeyForeignKey enforces belongs_to constraints on explicitly tagged primary keys.
+func TestAutoMigrateSharedPrimaryKeyForeignKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	regionModel := Model[foreignKeyRegion](db)
+	cityModel := Model[foreignKeySharedPrimaryKeyCity](db)
+	var table, from, to string
+
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := regionModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cityModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?)", cityModel.tableName).Scan(&table, &from, &to); err != nil {
+		t.Fatal(err)
+	}
+	if table != "regions" || from != "region_id" || to != "id" {
+		t.Fatalf("foreign key = %s(%s) -> %s, want region_id -> regions(id)", table, from, to)
+	}
+	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon", Name: "Oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cityModel.Create(ctx, foreignKeySharedPrimaryKeyCity{RegionID: "oregon", Name: "Portland"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cityModel.Create(ctx, foreignKeySharedPrimaryKeyCity{RegionID: "missing", Name: "Unknown"}); err == nil {
+		t.Fatal("Create() accepted a missing shared primary-key belongs_to target")
 	}
 }
 

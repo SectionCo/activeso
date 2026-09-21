@@ -9,7 +9,7 @@
 
 ## Foreign keys
 
-- `activeso:"belongs_to=table(column)"` on a scalar field adds an inline `REFERENCES table(column)` foreign key. Target table and column names must be simple identifiers, preventing tag content from becoming arbitrary SQL.
+- `activeso:"belongs_to=table(column)"` on a scalar field, including the primary-key field, adds an inline `REFERENCES table(column)` foreign key. Target table and column names must be simple identifiers, preventing tag content from becoming arbitrary SQL.
 - `AutoMigrate` creates the foreign key for new tables and for missing nullable linked columns. It intentionally does not retrofit a new foreign key onto an existing column; use a dedicated migration for that destructive schema change.
 - Combine `belongs_to` with `not_null` on the foreign-key field when the relationship is required. Foreign-key enforcement remains the database's responsibility.
 

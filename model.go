@@ -1116,11 +1116,6 @@ func (model *model[T]) columnDefinition(field field, includeRequired bool) (stri
 	}
 	if field.isID {
 		definition += " PRIMARY KEY"
-		if includeRequired && field.notNull {
-			definition += " NOT NULL"
-		}
-
-		return definition, nil
 	}
 	if includeRequired && field.notNull {
 		definition += " NOT NULL"
