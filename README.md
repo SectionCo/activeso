@@ -100,7 +100,7 @@ When loading a plain Go `string`, ActiveSo reads SQL `NULL` as `""`. This is the
 
 Plain numeric and boolean fields also read `NULL` as their Go zero values (`0`, `0.0`, and `false`) so rows created before an additive nullable migration remain readable. Use nullable `database/sql` value types when the distinction between `NULL` and a zero value matters.
 
-Use `sql.NullString` when your application needs to preserve that distinction. Import `database/sql` and use it directly in the model; ActiveSo stores it as `TEXT` and retains `Valid` when loading and saving:
+ActiveSo supports `sql.NullString` as `TEXT`, `sql.NullInt64` as `INTEGER`, `sql.NullFloat64` as `REAL`, and `sql.NullBool` as `INTEGER`. Use `sql.NullString` when your application needs to preserve the distinction between a missing string and an empty string. Import `database/sql` and use it directly in the model; ActiveSo retains `Valid` when loading and saving:
 
 ```go
 type User struct {
@@ -130,9 +130,9 @@ type User struct {
 | --- | --- | --- |
 | `not_null` | Adds `NOT NULL` when creating a table. ActiveSo refuses to add a new required column to an existing table automatically. | Turso rejects `NULL` values. |
 | `unique` | Creates a stable, unambiguous unique index for the table and column. | `Create` and `Save` check for an existing value first and return an error matching `activeso.ErrUnique`; the Turso index remains the concurrency-safe authority. |
-| `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use an immutable scalar type. |
+| `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use a supported immutable scalar type. |
 
-If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. 
+If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. Supported primary-key types are strings, booleans, signed integers, `uint8`, `uint16`, `uint32`, and floats. `uint` and `uint64` are rejected because their full range cannot be represented by Turso's signed 64-bit `INTEGER`.
 
 An unknown `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
 
@@ -166,6 +166,8 @@ userModel := activeso.Model[User](db)
 ### AutoMigrate
 
 `AutoMigrate(ctx)` creates the table, adds missing nullable columns, and creates tagged unique indexes. Call it once during application setup or deployment, separately from normal record operations.
+
+For an existing table, the model's ID column must be protected by a sole primary key or a single-column unique index. ActiveSo rejects composite primary keys that do not make the modeled ID independently unique, preventing `Save` and `Delete` from targeting multiple rows.
 
 ```go
 if err := userModel.AutoMigrate(ctx); err != nil {
@@ -202,7 +204,7 @@ if err := userModel.DropUnique(ctx, "email"); err != nil {
 
 Each column migration changes only its named target. Existing columns omitted from your Go struct, their data, and unrelated defaults, constraints, and indexes are preserved. For example, `ChangeColumnType(ctx, "email")` leaves an existing `nickname` column intact even if the struct no longer contains it. Removing a struct field alone never drops its database column; call `DropColumn` explicitly.
 
-These operations rebuild the existing database schema inside a transaction. Unsupported dependencies cause an error, and failed migrations roll back. Remove indexes or constraints referencing a column before dropping it. Rebuilds currently reject dependent views/triggers, foreign keys involving the table, generated columns, autoincrement columns, and primary-key type changes; those require a dedicated migration. Explicit NULL expressions and fully shadowed row IDs can also require a dedicated migration. Run destructive migrations during a controlled deployment and back up production data first.
+These operations rebuild the existing database schema inside a transaction. Unsupported dependencies cause an error, and failed migrations roll back. Remove indexes or constraints referencing a column before dropping it. Rebuilds currently reject dependent views/triggers, foreign keys involving the table, generated columns, autoincrement columns, primary-key type changes, and dropping inline primary-key columns; those require a dedicated migration. Explicit NULL expressions and fully shadowed row IDs can also require a dedicated migration. Run destructive migrations during a controlled deployment and back up production data first.
 
 ### Create
 
