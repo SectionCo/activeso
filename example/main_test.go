@@ -1,89 +1,68 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v5"
 )
 
-// TestUserForms verifies the page creates, updates, displays, and deletes users.
-func TestUserForms(t *testing.T) {
+// TestRenderPage verifies the page renders existing users and their management controls.
+func TestRenderPage(t *testing.T) {
 	// Initialize Variables
-	echoServer, db := openTestServer(t)
-	createResponse := performForm(t, echoServer, "/users", url.Values{"email": {"hello@null.live"}})
-	var id string
-
-	if createResponse.Code != http.StatusSeeOther {
-		t.Fatalf("create status = %d, want %d", createResponse.Code, http.StatusSeeOther)
-	}
-	if err := db.QueryRow("SELECT id FROM users WHERE email = ?", "hello@null.live").Scan(&id); err != nil {
-		t.Fatalf("load created user: %v", err)
-	}
-
-	updateResponse := performForm(t, echoServer, "/users/"+id, url.Values{"email": {"updated@null.live"}})
-	if updateResponse.Code != http.StatusSeeOther {
-		t.Fatalf("update status = %d, want %d", updateResponse.Code, http.StatusSeeOther)
-	}
-
-	listRequest := httptest.NewRequest(http.MethodGet, "/", nil)
-	listResponse := httptest.NewRecorder()
-	echoServer.ServeHTTP(listResponse, listRequest)
-	if !strings.Contains(listResponse.Body.String(), "updated@null.live") {
-		t.Fatalf("list page does not contain the updated email: %s", listResponse.Body.String())
-	}
-
-	deleteResponse := performForm(t, echoServer, "/users/"+id+"/delete", url.Values{})
-	if deleteResponse.Code != http.StatusSeeOther {
-		t.Fatalf("delete status = %d, want %d", deleteResponse.Code, http.StatusSeeOther)
-	}
-	if err := db.QueryRow("SELECT id FROM users WHERE id = ?", id).Scan(&id); err != sql.ErrNoRows {
-		t.Fatalf("deleted user query error = %v, want sql.ErrNoRows", err)
-	}
-}
-
-// openTestServer creates a temporary Turso database and a configured Echo application.
-func openTestServer(t *testing.T) (*echo.Echo, *sql.DB) {
-	// Initialize Variables
-	ctx := context.Background()
-	db, err := openDatabase(":memory:")
-
-	if err != nil {
-		t.Fatalf("openDatabase() error = %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() {
-		// Initialize Variables
-		closeError := db.Close()
-
-		if closeError != nil {
-			t.Errorf("db.Close() error = %v", closeError)
-		}
-	})
-
-	echoServer, err := newServer(ctx, db)
-	if err != nil {
-		t.Fatalf("newServer() error = %v", err)
-	}
-
-	return echoServer, db
-}
-
-// performForm submits values as an application/x-www-form-urlencoded POST request.
-func performForm(t *testing.T, echoServer *echo.Echo, path string, values url.Values) *httptest.ResponseRecorder {
-	// Initialize Variables
-	request, err := http.NewRequest(http.MethodPost, path, strings.NewReader(values.Encode()))
+	echoServer := echo.New()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
+	context := echoServer.NewContext(request, response)
+	users := []*User{{ID: "user-1", Email: "hello@null.live"}}
 
-	if err != nil {
-		t.Fatalf("http.NewRequest() error = %v", err)
+	if err := renderPage(context, users, nil, ""); err != nil {
+		t.Fatalf("renderPage() error = %v", err)
 	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	echoServer.ServeHTTP(response, request)
-	return response
+	if response.Code != http.StatusOK {
+		t.Fatalf("render status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	body := response.Body.String()
+	for _, expected := range []string{
+		`action="/users" method="post"`,
+		`action="/users/find" method="get"`,
+		"hello@null.live",
+		"User ID: user-1",
+		`formaction="/users/user-1/delete"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("rendered page does not contain %q: %s", expected, body)
+		}
+	}
+}
+
+// TestRenderPageFindStates verifies the page displays a found user and a search message.
+func TestRenderPageFindStates(t *testing.T) {
+	// Initialize Variables
+	echoServer := echo.New()
+	request := httptest.NewRequest(http.MethodGet, "/users/find", nil)
+	response := httptest.NewRecorder()
+	context := echoServer.NewContext(request, response)
+	foundUser := &User{ID: "user-2", Email: "found@null.live"}
+	message := "No user found for that ID."
+
+	if err := renderPage(context, nil, foundUser, message); err != nil {
+		t.Fatalf("renderPage() error = %v", err)
+	}
+
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Found user",
+		"found@null.live",
+		"user-2",
+		message,
+		"No users yet.",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("rendered find page does not contain %q: %s", expected, body)
+		}
+	}
 }

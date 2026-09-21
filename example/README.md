@@ -18,7 +18,7 @@ The application creates `example/activeso-example.db` if it does not already exi
 
 - `activeso.Model[User](db)` binds the Go model to the `users` table.
 - Creating a user with `userModel.Create(ctx, User{...})`.
-- Finding a user with `userModel.Find(ctx, id)`.
+- Finding a user with `userModel.Find(ctx, id)` via the find form.
 - Updating a bound record with `user.Save(ctx)`.
 - Deleting a bound record with `user.Delete(ctx)`.
 
@@ -26,7 +26,8 @@ The application creates `example/activeso-example.db` if it does not already exi
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/` | Renders the create form and existing users. |
+| `GET` | `/` | Renders the create form, find form, and existing users. |
+| `GET` | `/users/find` | Finds a user by ID from the `id` query parameter and renders the page with the result or a message. |
 | `POST` | `/users` | Creates a user from an email address. |
 | `POST` | `/users/:id` | Updates a user's email address. |
 | `POST` | `/users/:id/delete` | Deletes a user. |

@@ -24,10 +24,14 @@ type User struct {
 	Email string `db:"email" activeso:"not_null,unique"`
 }
 
+// pageData holds the data for the HTML template.
 type pageData struct {
-	Users []*User
+	Users   []*User
+	Found   *User
+	Message string
 }
 
+// page holds the HTML template for the users page.
 var page = template.Must(template.New("users").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -40,6 +44,7 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 		input { flex: 1; padding: .5rem; }
 		button { padding: .5rem .75rem; cursor: pointer; }
 		.delete { background: #b42318; color: white; border: 0; }
+		.message { color: #b42318; }
 		.id { color: #667085; font-size: .8rem; }
 	</style>
 </head>
@@ -49,6 +54,19 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 		<input name="email" type="email" placeholder="hello@null.live" required>
 		<button type="submit">Create user</button>
 	</form>
+	<form action="/users/find" method="get">
+		<input name="id" type="text" placeholder="User ID" required>
+		<button type="submit">Find user</button>
+	</form>
+
+	{{if .Message}}
+		<p class="message">{{.Message}}</p>
+	{{end}}
+
+	{{if .Found}}
+		<h2>Found user</h2>
+		<p>{{.Found.Email}} <span class="id">{{.Found.ID}}</span></p>
+	{{end}}
 
 	{{if .Users}}
 		<h2>Existing users</h2>
@@ -58,7 +76,7 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 				<button type="submit">Save</button>
 				<button class="delete" formaction="/users/{{.ID}}/delete" type="submit">Delete</button>
 			</form>
-			<div class="id">{{.ID}}</div>
+			<div class="id">User ID: {{.ID}}</div>
 		{{end}}
 	{{else}}
 		<p>No users yet.</p>
@@ -71,81 +89,90 @@ func main() {
 	// Initialize Variables
 	ctx := context.Background()
 
-	// Open the database connection.
-	db, err := openDatabase("activeso-example.db")
+	// Open the database connection to a local Turso database.
+	connector, err := turso.NewConnector("activeso-example.db")
 	if err != nil {
 		log.Fatal(err)
 	}
+	db := sql.OpenDB(connector)
 	defer db.Close()
 
-	echoServer, err := newServer(ctx, db)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println("Open http://localhost:8080")
-	if err := echoServer.Start(":8080"); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
-	}
-}
-
-// openDatabase creates a local Turso database connection for the supplied file path.
-func openDatabase(path string) (*sql.DB, error) {
-	// Initialize Variables
-	connector, err := turso.NewConnector(path)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return sql.OpenDB(connector), nil
-}
-
-// newServer migrates the User schema and configures its browser routes.
-func newServer(ctx context.Context, db *sql.DB) (*echo.Echo, error) {
-	// Initialize Variables
+	// Initialize ActiveSo Model
 	userModel := activeso.Model[User](db)
-	echoServer := echo.New()
 
+	// AutoMigrate the User model.
+	// This will create the necessary database schema for the User model.
+	// If the schema already exists, it will be migrated to the latest version.
+	// We recommend calling this once during application startup.
 	if err := userModel.AutoMigrate(ctx); err != nil {
-		return nil, err
+		log.Fatal(err)
 	}
 
-	echoServer.GET("/", func(c *echo.Context) error {
-		// Initialize Variables
-		ctx := c.Request().Context()
-		users, err := userModel.All(ctx)
+	// Initialize the Echo server.
+	// This will set up the necessary routes and middleware for the server.
+	e := echo.New()
+	e.GET("/", func(c *echo.Context) error {
 
+		// Find all users.
+		users, err := userModel.All(ctx)
 		if err != nil {
 			return err
 		}
 
-		return renderPage(c, users)
+		// Render the page with the list of users.
+		return renderPage(c, users, nil, "")
 	})
-	echoServer.POST("/users", func(c *echo.Context) error {
+	e.GET("/users/find", func(c *echo.Context) error {
+		// Initialize Variables
+		ctx := c.Request().Context()
+		id := strings.TrimSpace(c.QueryParam("id"))
+		users, err := userModel.All(ctx)
+		if err != nil {
+			return err
+		}
+
+		if id == "" {
+			return renderPage(c, users, nil, "Enter a user ID to find a user.")
+		}
+
+		// Find the user by ID.
+		user, err := userModel.Find(ctx, id)
+		if errors.Is(err, activeso.ErrNotFound) {
+			return renderPage(c, users, nil, "No user found for that ID.")
+		}
+		if err != nil {
+			return err
+		}
+
+		return renderPage(c, users, user, "")
+	})
+
+	e.POST("/users", func(c *echo.Context) error {
 		// Initialize Variables
 		ctx := c.Request().Context()
 		email := strings.TrimSpace(c.FormValue("email"))
-
 		if email == "" {
 			return c.String(http.StatusBadRequest, "email is required")
 		}
 
+		// Create a new user.
 		if _, err := userModel.Create(ctx, User{Email: email}); err != nil {
 			return err
 		}
 
+		// Redirect to the home page.
 		return c.Redirect(http.StatusSeeOther, "/")
 	})
-	echoServer.POST("/users/:id", func(c *echo.Context) error {
+	e.POST("/users/:id", func(c *echo.Context) error {
 		// Initialize Variables
 		ctx := c.Request().Context()
 		id := c.Param("id")
 		email := strings.TrimSpace(c.FormValue("email"))
-
 		if email == "" {
 			return c.String(http.StatusBadRequest, "email is required")
 		}
 
+		// Find the user by ID.
 		user, err := userModel.Find(ctx, id)
 		if errors.Is(err, activeso.ErrNotFound) {
 			return c.String(http.StatusNotFound, "user not found")
@@ -154,19 +181,20 @@ func newServer(ctx context.Context, db *sql.DB) (*echo.Echo, error) {
 			return err
 		}
 
+		// Update the user's email.
 		user.Email = email
 		if err := user.Save(ctx); err != nil {
 			return err
 		}
 
+		// Redirect to the home page.
 		return c.Redirect(http.StatusSeeOther, "/")
 	})
-	echoServer.POST("/users/:id/delete", func(c *echo.Context) error {
+	e.POST("/users/:id/delete", func(c *echo.Context) error {
 		// Initialize Variables
 		ctx := c.Request().Context()
 		id := c.Param("id")
 		user, err := userModel.Find(ctx, id)
-
 		if errors.Is(err, activeso.ErrNotFound) {
 			return c.String(http.StatusNotFound, "user not found")
 		}
@@ -174,20 +202,26 @@ func newServer(ctx context.Context, db *sql.DB) (*echo.Echo, error) {
 			return err
 		}
 
+		// Delete the user.
 		if err := user.Delete(ctx); err != nil {
 			return err
 		}
 
 		return c.Redirect(http.StatusSeeOther, "/")
 	})
-	return echoServer, nil
+
+	// Start the Echo server on port 8080.
+	if err := e.Start(":8080"); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Open http://localhost:8080")
 }
 
-// renderPage applies the user list to the HTML template and returns the result.
-func renderPage(c *echo.Context, users []*User) error {
+// renderPage applies the user list, found user, and message to the HTML template and returns the result.
+func renderPage(c *echo.Context, users []*User, found *User, message string) error {
 	// Initialize Variables
 	var output bytes.Buffer
-	data := pageData{Users: users}
+	data := pageData{Users: users, Found: found, Message: message}
 	err := page.Execute(&output, data)
 
 	if err != nil {
