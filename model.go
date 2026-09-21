@@ -905,12 +905,20 @@ func sqlColumnType(field field) (string, error) {
 	// Initialize Variables
 	kind := field.goType.Kind()
 	nullStringType := reflect.TypeFor[sql.NullString]()
+	nullInt64Type := reflect.TypeFor[sql.NullInt64]()
+	nullFloat64Type := reflect.TypeFor[sql.NullFloat64]()
+	nullBoolType := reflect.TypeFor[sql.NullBool]()
 
 	if field.isVector {
 		return "BLOB", nil
 	}
-	if field.goType == nullStringType {
+	switch field.goType {
+	case nullStringType:
 		return "TEXT", nil
+	case nullInt64Type, nullBoolType:
+		return "INTEGER", nil
+	case nullFloat64Type:
+		return "REAL", nil
 	}
 
 	switch kind {

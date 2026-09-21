@@ -66,6 +66,15 @@ type nullableStringUser struct {
 	Nickname sql.NullString `db:"nickname"`
 }
 
+type nullableWrapperUser struct {
+	Record
+
+	ID      string          `db:"id"`
+	Count   sql.NullInt64   `db:"count"`
+	Score   sql.NullFloat64 `db:"score"`
+	Enabled sql.NullBool    `db:"enabled"`
+}
+
 type idOnlyUser struct {
 	Record
 
@@ -206,6 +215,14 @@ func (migrationUserRequiredNickname) TableName() string {
 func (nullableStringUser) TableName() string {
 	// Initialize Variables
 	name := "migration_users"
+
+	return name
+}
+
+// TableName maps nullableWrapperUser to its temporary users table.
+func (nullableWrapperUser) TableName() string {
+	// Initialize Variables
+	name := "nullable_wrapper_users"
 
 	return name
 }
@@ -609,6 +626,51 @@ func TestNullStringPreservesNULL(t *testing.T) {
 	}
 	if !empty.Nickname.Valid || empty.Nickname.String != "" {
 		t.Fatalf("empty nickname = %#v, want valid empty string", empty.Nickname)
+	}
+}
+
+// TestNullableWrappersMapAndPreserveValues maps database/sql nullable scalar wrappers correctly.
+func TestNullableWrappersMapAndPreserveValues(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[nullableWrapperUser](db)
+	present := nullableWrapperUser{
+		ID:      "present",
+		Count:   sql.NullInt64{Int64: 42, Valid: true},
+		Score:   sql.NullFloat64{Float64: 3.5, Valid: true},
+		Enabled: sql.NullBool{Bool: true, Valid: true},
+	}
+	var countType, scoreType, enabledType string
+	var missing, found *nullableWrapperUser
+	var err error
+
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT type FROM pragma_table_info('nullable_wrapper_users') WHERE name = 'count'").Scan(&countType); err != nil || countType != "INTEGER" {
+		t.Fatalf("count schema = %q, error = %v, want INTEGER", countType, err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT type FROM pragma_table_info('nullable_wrapper_users') WHERE name = 'score'").Scan(&scoreType); err != nil || scoreType != "REAL" {
+		t.Fatalf("score schema = %q, error = %v, want REAL", scoreType, err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT type FROM pragma_table_info('nullable_wrapper_users') WHERE name = 'enabled'").Scan(&enabledType); err != nil || enabledType != "INTEGER" {
+		t.Fatalf("enabled schema = %q, error = %v, want INTEGER", enabledType, err)
+	}
+	if _, err := model.Create(ctx, nullableWrapperUser{ID: "missing"}); err != nil {
+		t.Fatalf("Create(NULL wrappers) error = %v", err)
+	}
+	if _, err := model.Create(ctx, present); err != nil {
+		t.Fatalf("Create(present wrappers) error = %v", err)
+	}
+
+	missing, err = model.Find(ctx, "missing")
+	if err != nil || missing.Count.Valid || missing.Score.Valid || missing.Enabled.Valid {
+		t.Fatalf("Find(NULL wrappers) = %#v, error = %v", missing, err)
+	}
+	found, err = model.Find(ctx, "present")
+	if err != nil || found.Count != present.Count || found.Score != present.Score || found.Enabled != present.Enabled {
+		t.Fatalf("Find(present wrappers) = %#v, error = %v", found, err)
 	}
 }
 

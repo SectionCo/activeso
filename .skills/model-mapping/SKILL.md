@@ -10,7 +10,7 @@
 
 - `AutoMigrate` compares SQLite column names case-insensitively.
 - New nullable scalar columns leave existing rows with SQL `NULL`.
-- Reads map `NULL` to zero values for plain strings, numbers, and booleans; use nullable `database/sql` types when `NULL` must remain distinguishable.
+- Reads map `NULL` to zero values for plain strings, numbers, and booleans; use `database/sql` nullable types when `NULL` must remain distinguishable. `sql.NullString`, `sql.NullInt64`, `sql.NullFloat64`, and `sql.NullBool` map to TEXT, INTEGER, REAL, and INTEGER columns respectively.
 
 ## Unique indexes
 
