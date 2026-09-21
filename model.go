@@ -886,7 +886,12 @@ func (model *model[T]) columnDefinition(field field, includeRequired bool) (stri
 		return "", err
 	}
 	if field.isID {
-		return definition + " PRIMARY KEY", nil
+		definition += " PRIMARY KEY"
+		if includeRequired && field.notNull {
+			definition += " NOT NULL"
+		}
+
+		return definition, nil
 	}
 	if includeRequired && field.notNull {
 		definition += " NOT NULL"

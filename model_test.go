@@ -94,6 +94,12 @@ type explicitPrimaryKeyUser struct {
 	Email      string `db:"email"`
 }
 
+type requiredPrimaryKeyUser struct {
+	Record
+
+	ExternalID string `db:"external_id" activeso:"not_null,primary_key"`
+}
+
 type duplicateColumnUser struct {
 	Record
 
@@ -220,6 +226,14 @@ func (numericMigrationV2) TableName() string {
 func (explicitPrimaryKeyUser) TableName() string {
 	// Initialize Variables
 	name := "explicit_primary_key_users"
+
+	return name
+}
+
+// TableName maps requiredPrimaryKeyUser to its temporary users table.
+func (requiredPrimaryKeyUser) TableName() string {
+	// Initialize Variables
+	name := "required_primary_key_users"
 
 	return name
 }
@@ -619,6 +633,25 @@ func TestModelEdgeCases(t *testing.T) {
 	found, err := explicitKeyModel.Find(ctx, "external")
 	if err != nil || found.Email != created.Email {
 		t.Fatalf("explicit primary key Find() = %#v, %v", found, err)
+	}
+}
+
+// TestAutoMigrateEnforcesRequiredPrimaryKeys rejects NULL primary-key values in direct writes.
+func TestAutoMigrateEnforcesRequiredPrimaryKeys(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[requiredPrimaryKeyUser](db)
+	var required bool
+
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT "notnull" FROM pragma_table_info('required_primary_key_users') WHERE name = 'external_id'`).Scan(&required); err != nil || !required {
+		t.Fatalf("external_id NOT NULL = %t, error = %v, want true", required, err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO required_primary_key_users (external_id) VALUES (NULL)"); err == nil {
+		t.Fatal("direct NULL primary-key insert succeeded")
 	}
 }
 
