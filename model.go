@@ -141,6 +141,8 @@ func (model *model[T]) Bind(value *T) (*T, error) {
 func (model *model[T]) AutoMigrate(ctx context.Context) error {
 	// Initialize Variables
 	transaction, err := model.db.BeginTx(ctx, nil)
+	var createStatement string
+	var columns map[string]bool
 
 	if err != nil {
 		return fmt.Errorf("activeso: begin migration for %s: %w", model.tableName, err)
@@ -148,7 +150,7 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 	defer transaction.Rollback()
 
 	// Create the table before checking its existing columns.
-	createStatement, err := model.createTableStatement()
+	createStatement, err = model.createTableStatement()
 	if err != nil {
 		return err
 	}
@@ -156,7 +158,7 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 		return fmt.Errorf("activeso: create table %s: %w", model.tableName, err)
 	}
 
-	columns, err := model.existingColumns(ctx, transaction)
+	columns, err = model.existingColumns(ctx, transaction)
 	if err != nil {
 		return err
 	}
