@@ -30,6 +30,11 @@ type field struct {
 	primaryKey bool
 }
 
+type columnInfo struct {
+	primaryKey bool
+	unique     bool
+}
+
 type model[T any] struct {
 	db        *sql.DB
 	tableName string
@@ -144,7 +149,9 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 	// Initialize Variables
 	transaction, err := model.db.BeginTx(ctx, nil)
 	var createStatement string
-	var columns map[string]bool
+	var columns map[string]columnInfo
+	var idColumn columnInfo
+	var found bool
 
 	if err != nil {
 		return fmt.Errorf("activeso: begin migration for %s: %w", model.tableName, err)
@@ -164,8 +171,12 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	idColumn, found = columns[strings.ToLower(model.idField.column)]
+	if !found || !idColumn.unique {
+		return fmt.Errorf("activeso: existing table %s must define a primary key or unique constraint on %s", model.tableName, model.idField.column)
+	}
 	for _, field := range model.fields {
-		if columns[strings.ToLower(field.column)] {
+		if _, found := columns[strings.ToLower(field.column)]; found {
 			continue
 		}
 		if field.notNull {
@@ -939,12 +950,13 @@ func sqlColumnType(field field) (string, error) {
 	return "", fmt.Errorf("activeso: cannot infer a SQL type for %s", field.goType)
 }
 
-// existingColumns returns the columns currently defined on the model's table.
-func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx) (map[string]bool, error) {
+// existingColumns returns each column's identity metadata from the model's existing table.
+func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx) (map[string]columnInfo, error) {
 	// Initialize Variables
 	statement := fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(model.tableName))
 	rows, err := transaction.QueryContext(ctx, statement)
-	columns := make(map[string]bool)
+	columns := make(map[string]columnInfo)
+	primaryKeyColumns := 0
 
 	if err != nil {
 		return nil, fmt.Errorf("activeso: inspect table %s: %w", model.tableName, err)
@@ -957,14 +969,106 @@ func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx)
 		var columnType string
 		var notNull bool
 		var defaultValue any
-		var primaryKey bool
-		if err := rows.Scan(&index, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+		var primaryKeyPosition int
+		if err := rows.Scan(&index, &name, &columnType, &notNull, &defaultValue, &primaryKeyPosition); err != nil {
 			return nil, fmt.Errorf("activeso: inspect columns for %s: %w", model.tableName, err)
 		}
-		columns[strings.ToLower(name)] = true
+		primaryKey := primaryKeyPosition > 0
+		if primaryKey {
+			primaryKeyColumns++
+		}
+		columns[strings.ToLower(name)] = columnInfo{primaryKey: primaryKey}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("activeso: iterate columns for %s: %w", model.tableName, err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("activeso: close column inspection for %s: %w", model.tableName, err)
+	}
+	if primaryKeyColumns == 1 {
+		for name, column := range columns {
+			if column.primaryKey {
+				column.unique = true
+				columns[name] = column
+			}
+		}
+	}
+
+	uniqueColumns, err := model.uniqueColumns(ctx, transaction)
+	if err != nil {
+		return nil, err
+	}
+	for name := range uniqueColumns {
+		column, found := columns[name]
+		if found {
+			column.unique = true
+			columns[name] = column
+		}
+	}
+
+	return columns, nil
+}
+
+// uniqueColumns returns columns protected by a single-column unique index on the model's table.
+func (model *model[T]) uniqueColumns(ctx context.Context, transaction *sql.Tx) (map[string]bool, error) {
+	// Initialize Variables
+	statement := fmt.Sprintf("PRAGMA index_list(%s)", quoteIdentifier(model.tableName))
+	rows, err := transaction.QueryContext(ctx, statement)
+	indexNames := make([]string, 0)
+	columns := make(map[string]bool)
+
+	if err != nil {
+		return nil, fmt.Errorf("activeso: inspect indexes for %s: %w", model.tableName, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sequence int
+		var name string
+		var unique bool
+		var origin string
+		var partial bool
+		if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
+			return nil, fmt.Errorf("activeso: inspect indexes for %s: %w", model.tableName, err)
+		}
+		if unique {
+			indexNames = append(indexNames, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("activeso: iterate indexes for %s: %w", model.tableName, err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("activeso: close index inspection for %s: %w", model.tableName, err)
+	}
+
+	for _, name := range indexNames {
+		statement = fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(name))
+		rows, err = transaction.QueryContext(ctx, statement)
+		if err != nil {
+			return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
+		}
+
+		var indexedColumns []string
+		for rows.Next() {
+			var sequence, columnIndex int
+			var columnName string
+			if err := rows.Scan(&sequence, &columnIndex, &columnName); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
+			}
+			indexedColumns = append(indexedColumns, strings.ToLower(columnName))
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("activeso: iterate index %s for %s: %w", name, model.tableName, err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("activeso: close index %s for %s: %w", name, model.tableName, err)
+		}
+		if len(indexedColumns) == 1 {
+			columns[indexedColumns[0]] = true
+		}
 	}
 
 	return columns, nil

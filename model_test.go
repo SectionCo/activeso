@@ -871,6 +871,55 @@ func TestAutoMigrateHandlesNullableScalars(t *testing.T) {
 	}
 }
 
+// TestAutoMigrateRejectsUnconstrainedLegacyID rejects tables whose modeled identity is not unique.
+func TestAutoMigrateRejectsUnconstrainedLegacyID(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[testUser](db)
+	var err error
+
+	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT, email TEXT, embedding BLOB)"); err != nil {
+		t.Fatal(err)
+	}
+	err = model.AutoMigrate(ctx)
+	if err == nil {
+		t.Fatal("AutoMigrate() accepted an unconstrained legacy ID")
+	}
+}
+
+// TestAutoMigrateRejectsCompositeLegacyID rejects composite keys that do not uniquely identify the modeled ID.
+func TestAutoMigrateRejectsCompositeLegacyID(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[testUser](db)
+	var err error
+
+	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT, tenant TEXT, email TEXT, embedding BLOB, PRIMARY KEY (id, tenant))"); err != nil {
+		t.Fatal(err)
+	}
+	err = model.AutoMigrate(ctx)
+	if err == nil {
+		t.Fatal("AutoMigrate() accepted a composite legacy ID")
+	}
+}
+
+// TestAutoMigrateAcceptsUniqueLegacyID accepts an existing identity protected by a unique constraint.
+func TestAutoMigrateAcceptsUniqueLegacyID(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[testUser](db)
+
+	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT UNIQUE, email TEXT, embedding BLOB)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+}
+
 // TestAutoMigrateMatchesColumnsCaseInsensitively accepts SQLite's case-insensitive identifiers.
 func TestAutoMigrateMatchesColumnsCaseInsensitively(t *testing.T) {
 	// Initialize Variables
