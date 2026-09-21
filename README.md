@@ -88,13 +88,15 @@ type User struct {
 ```sql
 CREATE TABLE users (
 	id TEXT PRIMARY KEY,
-	email TEXT NOT NULL
+	email TEXT NOT NULL,
+	activeso_created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	activeso_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX activeso_7573657273_656d61696c_unique ON users (email);
 ```
 
-`Record` holds ActiveSo's runtime persistence binding and is not a database column. The `db` tags select column names; without them, ActiveSo derives snake_case names from exported field names. The `activeso:"not_null,unique"` tag adds `NOT NULL` and a unique index when `AutoMigrate(ctx)` runs.
+`Record` holds ActiveSo's runtime persistence binding and is not a database column. It promotes managed `time.Time` fields as `CreatedAt` and `UpdatedAt` on each model value. The `db` tags select column names; without them, ActiveSo derives snake_case names from exported field names. Every ActiveSo table also receives implicit `activeso_created_at` and `activeso_updated_at` UTC timestamp columns. New tables use `CURRENT_TIMESTAMP` defaults, and an update trigger refreshes `activeso_updated_at` whenever a non-timestamp column changes. Protected triggers reject later replacement of `activeso_created_at` and arbitrary replacement of `activeso_updated_at`. `Create`, reads, and successful `Save` calls populate or refresh the Go fields; `Bind` only attaches persistence behavior and does not load timestamps. The `activeso:"not_null,unique"` tag adds `NOT NULL` and a unique index when `AutoMigrate(ctx)` runs.
 
 When loading a plain Go `string`, ActiveSo reads SQL `NULL` as `""`. This is the default: it lets a nullable string column added by `AutoMigrate` remain readable for pre-existing rows. A plain string write always stores text, so `NULL` and an empty string become indistinguishable after the value is loaded or saved.
 
@@ -329,4 +331,26 @@ The `example/` directory contains a small Echo v5 server with a single HTML page
 
 ```sh
 go -C example run .
+```
+
+### Inspect the local database
+
+After stopping the browser example so it no longer has the database file open, start a local Turso server in one terminal:
+
+```sh
+turso dev --db-file activeso-example.db --port 8100
+```
+
+In a second terminal, connect its SQL shell:
+
+```sh
+turso db shell http://127.0.0.1:8100
+```
+
+Then inspect the database from the shell:
+
+```sql
+.tables
+.schema users
+SELECT * FROM users;
 ```

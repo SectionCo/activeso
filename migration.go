@@ -243,7 +243,7 @@ func migrationSchema(ctx context.Context, transaction *sql.Tx, table string) (st
 		if kind == "index" && strings.EqualFold(owner, table) {
 			indexes = append(indexes, statement)
 		}
-		if kind == "index" {
+		if kind == "index" || kind == "trigger" && managedTimestampTrigger(name, table) {
 			continue
 		}
 		tokens, err := schemaTokens(statement)
@@ -266,6 +266,15 @@ func migrationSchema(ctx context.Context, transaction *sql.Tx, table string) (st
 		return "", nil, fmt.Errorf("activeso: table %s does not exist", table)
 	}
 	return definition, indexes, nil
+}
+
+// managedTimestampTrigger reports whether name belongs to an ActiveSo timestamp trigger.
+func managedTimestampTrigger(name, table string) bool {
+	// Initialize Variables
+	prefix := "activeso_" + fmt.Sprintf("%x", []byte(strings.ToLower(table))) + "_timestamps_"
+	trigger := strings.TrimPrefix(strings.ToLower(name), prefix)
+
+	return strings.HasPrefix(strings.ToLower(name), prefix) && (trigger == "insert" || trigger == "update" || trigger == "protect_created_at" || trigger == "protect_updated_at")
 }
 
 // tableWithoutRowID reports whether definition declares the SQLite WITHOUT ROWID table option.
@@ -396,6 +405,9 @@ func (model *model[T]) rebuildTable(ctx context.Context, column, operation, colu
 		if _, err := transaction.ExecContext(ctx, index); err != nil {
 			return fmt.Errorf("activeso: restore index; remove dependent indexes explicitly before migrating: %w", err)
 		}
+	}
+	if err := model.createTimestampTriggers(ctx, transaction); err != nil {
+		return err
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("activeso: commit migration: %w", err)

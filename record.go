@@ -3,6 +3,7 @@ package activeso
 import (
 	"context"
 	"reflect"
+	"time"
 )
 
 type recordBinding interface {
@@ -10,8 +11,10 @@ type recordBinding interface {
 	delete(context.Context, any, any) error
 }
 
-// Record embeds active-record persistence methods into an application-defined model.
+// Record embeds active-record persistence methods and managed timestamps into an application-defined model.
 type Record struct {
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 	binding    recordBinding
 	owner      any
 	originalID any
