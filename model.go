@@ -971,8 +971,10 @@ func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx)
 // uniqueIndexName returns an unambiguous stable name used for one field's unique index.
 func (model *model[T]) uniqueIndexName(field field) string {
 	// Initialize Variables
-	table := hex.EncodeToString([]byte(model.tableName))
-	column := hex.EncodeToString([]byte(field.column))
+	tableName := strings.ToLower(model.tableName)
+	columnName := strings.ToLower(field.column)
+	table := hex.EncodeToString([]byte(tableName))
+	column := hex.EncodeToString([]byte(columnName))
 	name := "activeso_" + table + "_" + column + "_unique"
 
 	return name

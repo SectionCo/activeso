@@ -14,4 +14,4 @@
 
 ## Unique indexes
 
-- ActiveSo-generated unique-index names hex-encode table and column names, making SQLite-global index names unambiguous for every table/column pair.
+- ActiveSo-generated unique-index names lowercase then hex-encode table and column names, making SQLite-global index names unambiguous and stable across case-only mapping changes.

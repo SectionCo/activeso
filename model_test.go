@@ -170,6 +170,27 @@ type caseColumnUser struct {
 	Email string `db:"email"`
 }
 
+type caseUniqueUserV1 struct {
+	Record
+
+	ID    string `db:"id"`
+	Email string `db:"email" activeso:"unique"`
+}
+
+type caseUniqueUserV2 struct {
+	Record
+
+	ID    string `db:"ID"`
+	Email string `db:"EMAIL" activeso:"unique"`
+}
+
+type caseUniqueUserV3 struct {
+	Record
+
+	ID    string `db:"id"`
+	Email string `db:"EMAIL"`
+}
+
 // TableName maps testUser to the temporary users table.
 func (testUser) TableName() string {
 	// Initialize Variables
@@ -302,6 +323,30 @@ func (uniqueCollisionSecond) TableName() string {
 func (caseColumnUser) TableName() string {
 	// Initialize Variables
 	name := "case_column_users"
+
+	return name
+}
+
+// TableName maps the first unique-index spelling to its temporary users table.
+func (caseUniqueUserV1) TableName() string {
+	// Initialize Variables
+	name := "case_unique_users"
+
+	return name
+}
+
+// TableName maps the second unique-index spelling to its temporary users table.
+func (caseUniqueUserV2) TableName() string {
+	// Initialize Variables
+	name := "CASE_UNIQUE_USERS"
+
+	return name
+}
+
+// TableName maps the unique-index removal spelling to its temporary users table.
+func (caseUniqueUserV3) TableName() string {
+	// Initialize Variables
+	name := "case_unique_users"
 
 	return name
 }
@@ -811,6 +856,37 @@ func TestUniqueIndexNamesAreUnambiguous(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO foo (id, bar_baz) VALUES ('one', 'duplicate'), ('two', 'duplicate')"); err == nil {
 		t.Fatal("second unique index was not enforced")
+	}
+}
+
+// TestUniqueIndexNamesIgnoreIdentifierCase reuses and removes indexes across case-only mapping changes.
+func TestUniqueIndexNamesIgnoreIdentifierCase(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	first := Model[caseUniqueUserV1](db)
+	second := Model[caseUniqueUserV2](db)
+	removal := Model[caseUniqueUserV3](db)
+	indexName := first.uniqueIndexName(first.fields[1])
+	var indexes int
+
+	if err := first.AutoMigrate(ctx); err != nil {
+		t.Fatalf("first AutoMigrate() error = %v", err)
+	}
+	if err := second.AutoMigrate(ctx); err != nil {
+		t.Fatalf("second AutoMigrate() error = %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexes); err != nil || indexes != 1 {
+		t.Fatalf("unique index count = %d, error = %v, want 1", indexes, err)
+	}
+	if err := removal.DropUnique(ctx, "EMAIL"); err != nil {
+		t.Fatalf("DropUnique() error = %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexes); err != nil || indexes != 0 {
+		t.Fatalf("unique index count after DropUnique() = %d, error = %v, want 0", indexes, err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO case_unique_users (id, email) VALUES ('one', 'duplicate'), ('two', 'duplicate')"); err != nil {
+		t.Fatalf("duplicate insert after DropUnique() error = %v", err)
 	}
 }
 
