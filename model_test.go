@@ -371,6 +371,9 @@ func TestModelLifecycle(t *testing.T) {
 	if created.ID == "" {
 		t.Fatal("Create() did not generate an ID")
 	}
+	if created.CreatedAt.IsZero() || created.UpdatedAt.IsZero() {
+		t.Fatalf("Create() timestamps = %v, %v", created.CreatedAt, created.UpdatedAt)
+	}
 
 	// Find decodes vectors and returns another bound instance.
 	found, err := userModel.Find(ctx, created.ID)
@@ -382,6 +385,9 @@ func TestModelLifecycle(t *testing.T) {
 	}
 	if !reflect.DeepEqual(found.Embedding, inputVector) {
 		t.Fatalf("Find() embedding = %#v, want %#v", found.Embedding, inputVector)
+	}
+	if found.CreatedAt.IsZero() || found.UpdatedAt.IsZero() {
+		t.Fatalf("Find() timestamps = %v, %v", found.CreatedAt, found.UpdatedAt)
 	}
 
 	// Vector predicates and nearest-neighbor ordering use encoded Vector32 query arguments.
@@ -412,6 +418,9 @@ func TestModelLifecycle(t *testing.T) {
 	found.Email = "updated@null.live"
 	if err := found.Save(ctx); err != nil {
 		t.Fatalf("Save() error = %v", err)
+	}
+	if found.UpdatedAt.IsZero() {
+		t.Fatal("Save() did not refresh UpdatedAt")
 	}
 
 	matching, err := userModel.Where("email = ?", "updated@null.live").All(ctx)
@@ -489,14 +498,17 @@ func TestAutoMigrateTimestamps(t *testing.T) {
 		t.Fatalf("insert timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
 	}
 
-	// Force a distinct prior value so the update-trigger assertion is independent of clock precision.
-	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_updated_at = 'before' WHERE id = 'timestamped'"); err != nil {
-		t.Fatal(err)
+	// Timestamp columns reject direct replacement while ordinary data updates remain allowed.
+	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_created_at = 'before' WHERE id = 'timestamped'"); err == nil {
+		t.Fatal("accepted a direct creation timestamp update")
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_updated_at = 'before' WHERE id = 'timestamped'"); err == nil {
+		t.Fatal("accepted a direct update timestamp replacement")
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE users SET email = 'changed@example.com' WHERE id = 'timestamped'"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&updatedAt); err != nil || updatedAt == "before" {
+	if err := db.QueryRowContext(ctx, "SELECT activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&updatedAt); err != nil || updatedAt == "" {
 		t.Fatalf("updated timestamp = %q, error = %v", updatedAt, err)
 	}
 }
@@ -726,6 +738,9 @@ func TestModelBind(t *testing.T) {
 	if _, err := userModel.Bind(&user); err != nil {
 		t.Fatalf("Bind() error = %v", err)
 	}
+	if !user.CreatedAt.IsZero() || !user.UpdatedAt.IsZero() {
+		t.Fatalf("Bind() loaded timestamps = %v, %v", user.CreatedAt, user.UpdatedAt)
+	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES (?, ?)", user.ID, user.Email); err != nil {
 		t.Fatalf("insert bound user: %v", err)
 	}
@@ -733,6 +748,9 @@ func TestModelBind(t *testing.T) {
 	user.Email = "bound@null.live"
 	if err := user.Save(ctx); err != nil {
 		t.Fatalf("Save() on bound user error = %v", err)
+	}
+	if user.CreatedAt.IsZero() || user.UpdatedAt.IsZero() {
+		t.Fatalf("Save() on bound user timestamps = %v, %v", user.CreatedAt, user.UpdatedAt)
 	}
 }
 

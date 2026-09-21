@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 	"unicode"
 
 	turso "turso.tech/database/tursogo"
@@ -97,6 +98,9 @@ func (model *model[T]) Create(ctx context.Context, value T) (*T, error) {
 	statement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdentifier(model.tableName), strings.Join(columns, ", "), strings.Join(expressions, ", "))
 	if _, err := model.db.ExecContext(ctx, statement, arguments...); err != nil {
 		return nil, fmt.Errorf("activeso: create %s: %w", model.tableName, model.uniqueWriteError(err))
+	}
+	if err := model.refreshTimestamps(ctx, record); err != nil {
+		return nil, err
 	}
 
 	return record, nil
@@ -329,6 +333,9 @@ func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	}
 	if rows == 0 {
 		return ErrNotFound
+	}
+	if err := model.refreshTimestamps(ctx, record); err != nil {
+		return err
 	}
 
 	return nil
@@ -946,6 +953,8 @@ func (model *model[T]) createTimestampTriggers(ctx context.Context, transaction 
 	updatedColumns := make([]string, 0, len(columns)-2)
 	insertTrigger := model.timestampTriggerName("insert")
 	updateTrigger := model.timestampTriggerName("update")
+	createdAtTrigger := model.timestampTriggerName("protect_created_at")
+	updatedAtTrigger := model.timestampTriggerName("protect_updated_at")
 
 	if err != nil {
 		return err
@@ -959,11 +968,23 @@ func (model *model[T]) createTimestampTriggers(ctx context.Context, transaction 
 	if len(updatedColumns) == 0 {
 		return nil
 	}
-	for _, trigger := range []string{insertTrigger, updateTrigger} {
+	for _, trigger := range []string{insertTrigger, updateTrigger, createdAtTrigger, updatedAtTrigger} {
 		statement := "DROP TRIGGER IF EXISTS " + quoteIdentifier(trigger)
 		if _, err := transaction.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("activeso: replace timestamp trigger for %s: %w", model.tableName, err)
 		}
+	}
+
+	// Reject updates that attempt to replace an established creation timestamp.
+	createdAtStatement := fmt.Sprintf("CREATE TRIGGER %s BEFORE UPDATE OF %s ON %s WHEN OLD.%s IS NOT NULL AND NEW.%s IS NOT OLD.%s BEGIN SELECT RAISE(ABORT, 'activeso: activeso_created_at is immutable'); END", quoteIdentifier(createdAtTrigger), quoteIdentifier(createdAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn))
+	if _, err := transaction.ExecContext(ctx, createdAtStatement); err != nil {
+		return fmt.Errorf("activeso: create creation timestamp trigger for %s: %w", model.tableName, err)
+	}
+
+	// Reject direct timestamp replacements while allowing the managed trigger's current timestamp.
+	updatedAtStatement := fmt.Sprintf("CREATE TRIGGER %s BEFORE UPDATE OF %s ON %s WHEN NEW.%s IS NOT OLD.%s AND NEW.%s IS NOT CURRENT_TIMESTAMP BEGIN SELECT RAISE(ABORT, 'activeso: activeso_updated_at is managed'); END", quoteIdentifier(updatedAtTrigger), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn))
+	if _, err := transaction.ExecContext(ctx, updatedAtStatement); err != nil {
+		return fmt.Errorf("activeso: create update timestamp trigger for %s: %w", model.tableName, err)
 	}
 
 	// Fill nullable legacy timestamp columns when callers omit them during inserts.
@@ -1287,7 +1308,7 @@ func (model *model[T]) idValue(record *T) (any, error) {
 // selectColumns returns scan-friendly SELECT expressions for the model's fields.
 func (model *model[T]) selectColumns() []string {
 	// Initialize Variables
-	columns := make([]string, 0, len(model.fields))
+	columns := make([]string, 0, len(model.fields)+2)
 
 	for _, field := range model.fields {
 		column := quoteIdentifier(field.column)
@@ -1301,6 +1322,7 @@ func (model *model[T]) selectColumns() []string {
 		}
 		columns = append(columns, column)
 	}
+	columns = append(columns, quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn))
 
 	return columns
 }
@@ -1325,9 +1347,12 @@ func nullableScalar(typeOfT reflect.Type) bool {
 func (model *model[T]) scan(rows *sql.Rows, record *T) error {
 	// Initialize Variables
 	values := make([]any, len(model.fields))
-	destinations := make([]any, len(model.fields))
+	destinations := make([]any, len(model.fields)+2)
 	nullableStrings := make([]sql.NullString, len(model.fields))
+	createdAt := sql.NullString{}
+	updatedAt := sql.NullString{}
 	valueOfT := reflect.ValueOf(record).Elem()
+	recordValue := valueOfT.FieldByName("Record").Addr().Interface().(*Record)
 
 	for index, field := range model.fields {
 		if field.isVector {
@@ -1340,6 +1365,8 @@ func (model *model[T]) scan(rows *sql.Rows, record *T) error {
 		}
 		destinations[index] = valueOfT.Field(field.index).Addr().Interface()
 	}
+	destinations[len(model.fields)] = &createdAt
+	destinations[len(model.fields)+1] = &updatedAt
 
 	if err := rows.Scan(destinations...); err != nil {
 		return fmt.Errorf("activeso: scan %s: %w", model.tableName, err)
@@ -1359,6 +1386,66 @@ func (model *model[T]) scan(rows *sql.Rows, record *T) error {
 			valueOfT.Field(field.index).SetString(nullableStrings[index].String)
 		}
 	}
+	if err := assignRecordTimestamps(recordValue, createdAt, updatedAt); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+// refreshTimestamps loads the managed timestamp values after an ActiveSo write.
+func (model *model[T]) refreshTimestamps(ctx context.Context, record *T) error {
+	// Initialize Variables
+	createdAt := sql.NullString{}
+	updatedAt := sql.NullString{}
+	id, err := model.idValue(record)
+	statement := fmt.Sprintf("SELECT %s, %s FROM %s WHERE %s = ?", quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(model.idField.column))
+	recordValue := reflect.ValueOf(record).Elem().FieldByName("Record").Addr().Interface().(*Record)
+
+	if err != nil {
+		return err
+	}
+	if err := model.db.QueryRowContext(ctx, statement, id).Scan(&createdAt, &updatedAt); err != nil {
+		return fmt.Errorf("activeso: load timestamps for %s: %w", model.tableName, err)
+	}
+
+	return assignRecordTimestamps(recordValue, createdAt, updatedAt)
+}
+
+// assignRecordTimestamps decodes database timestamps into the embedded Record fields.
+func assignRecordTimestamps(record *Record, createdAt, updatedAt sql.NullString) error {
+	// Initialize Variables
+	createdValue, err := timestampValue(createdAt)
+	updatedValue := time.Time{}
+
+	if err != nil {
+		return err
+	}
+	updatedValue, err = timestampValue(updatedAt)
+	if err != nil {
+		return err
+	}
+
+	record.CreatedAt = createdValue
+	record.UpdatedAt = updatedValue
+	return nil
+}
+
+// timestampValue parses Turso's UTC timestamp text, preserving SQL NULL as time.Time's zero value.
+func timestampValue(value sql.NullString) (time.Time, error) {
+	// Initialize Variables
+	layouts := []string{time.DateTime, time.RFC3339Nano}
+	zero := time.Time{}
+
+	if !value.Valid {
+		return zero, nil
+	}
+	for _, layout := range layouts {
+		parsed, err := time.ParseInLocation(layout, value.String, time.UTC)
+		if err == nil {
+			return parsed, nil
+		}
+	}
+
+	return zero, fmt.Errorf("activeso: parse timestamp %q", value.String)
 }

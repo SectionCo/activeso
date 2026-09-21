@@ -268,12 +268,13 @@ func migrationSchema(ctx context.Context, transaction *sql.Tx, table string) (st
 	return definition, indexes, nil
 }
 
-// managedTimestampTrigger reports whether name belongs to ActiveSo's replaceable timestamp triggers.
+// managedTimestampTrigger reports whether name belongs to an ActiveSo timestamp trigger.
 func managedTimestampTrigger(name, table string) bool {
 	// Initialize Variables
 	prefix := "activeso_" + fmt.Sprintf("%x", []byte(strings.ToLower(table))) + "_timestamps_"
+	trigger := strings.TrimPrefix(strings.ToLower(name), prefix)
 
-	return strings.HasPrefix(strings.ToLower(name), prefix)
+	return strings.HasPrefix(strings.ToLower(name), prefix) && (trigger == "insert" || trigger == "update" || trigger == "protect_created_at" || trigger == "protect_updated_at")
 }
 
 // tableWithoutRowID reports whether definition declares the SQLite WITHOUT ROWID table option.
