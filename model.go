@@ -30,6 +30,11 @@ type field struct {
 	primaryKey bool
 }
 
+const (
+	createdAtColumn = "activeso_created_at"
+	updatedAtColumn = "activeso_updated_at"
+)
+
 type columnInfo struct {
 	primaryKey bool
 	unique     bool
@@ -193,7 +198,13 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 		}
 	}
 
+	if err := model.createTimestampColumns(ctx, transaction, columns); err != nil {
+		return err
+	}
 	if err := model.createUniqueIndexes(ctx, transaction); err != nil {
+		return err
+	}
+	if err := model.createTimestampTriggers(ctx, transaction); err != nil {
 		return err
 	}
 
@@ -876,7 +887,7 @@ func (model *model[T]) createTableStatement() (string, error) {
 // createTableStatementFor builds a CREATE TABLE statement for a supplied table name.
 func (model *model[T]) createTableStatementFor(tableName string) (string, error) {
 	// Initialize Variables
-	definitions := make([]string, 0, len(model.fields))
+	definitions := make([]string, 0, len(model.fields)+2)
 
 	for _, field := range model.fields {
 		definition, err := model.columnDefinition(field, true)
@@ -885,8 +896,97 @@ func (model *model[T]) createTableStatementFor(tableName string) (string, error)
 		}
 		definitions = append(definitions, definition)
 	}
+	// Store UTC timestamps automatically without requiring fields on application models.
+	definitions = append(definitions,
+		quoteIdentifier(createdAtColumn)+" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+		quoteIdentifier(updatedAtColumn)+" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+	)
 
 	return fmt.Sprintf("CREATE TABLE %s (%s)", quoteIdentifier(tableName), strings.Join(definitions, ", ")), nil
+}
+
+// createTimestampColumns adds and initializes the managed timestamp columns on an existing table.
+func (model *model[T]) createTimestampColumns(ctx context.Context, transaction *sql.Tx, columns map[string]columnInfo) error {
+	// Initialize Variables
+	missingCreatedAt := false
+	missingUpdatedAt := false
+
+	// SQLite cannot add a column with a non-constant timestamp default, so legacy tables use triggers.
+	if _, found := columns[createdAtColumn]; !found {
+		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT", quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn))
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("activeso: add timestamp column %s to %s: %w", createdAtColumn, model.tableName, err)
+		}
+		missingCreatedAt = true
+	}
+	if _, found := columns[updatedAtColumn]; !found {
+		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT", quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn))
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("activeso: add timestamp column %s to %s: %w", updatedAtColumn, model.tableName, err)
+		}
+		missingUpdatedAt = true
+	}
+	if !missingCreatedAt && !missingUpdatedAt {
+		return nil
+	}
+
+	// Assign creation-time values to rows that existed before timestamp support.
+	statement := fmt.Sprintf("UPDATE %s SET %s = COALESCE(%s, CURRENT_TIMESTAMP), %s = COALESCE(%s, CURRENT_TIMESTAMP)", quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn))
+	if _, err := transaction.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("activeso: initialize timestamps for %s: %w", model.tableName, err)
+	}
+
+	return nil
+}
+
+// createTimestampTriggers installs the managed triggers that fill and refresh table timestamps.
+func (model *model[T]) createTimestampTriggers(ctx context.Context, transaction *sql.Tx) error {
+	// Initialize Variables
+	columns, err := model.existingColumns(ctx, transaction)
+	updatedColumns := make([]string, 0, len(columns)-2)
+	insertTrigger := model.timestampTriggerName("insert")
+	updateTrigger := model.timestampTriggerName("update")
+
+	if err != nil {
+		return err
+	}
+	for column := range columns {
+		if strings.EqualFold(column, createdAtColumn) || strings.EqualFold(column, updatedAtColumn) {
+			continue
+		}
+		updatedColumns = append(updatedColumns, quoteIdentifier(column))
+	}
+	if len(updatedColumns) == 0 {
+		return nil
+	}
+	for _, trigger := range []string{insertTrigger, updateTrigger} {
+		statement := "DROP TRIGGER IF EXISTS " + quoteIdentifier(trigger)
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("activeso: replace timestamp trigger for %s: %w", model.tableName, err)
+		}
+	}
+
+	// Fill nullable legacy timestamp columns when callers omit them during inserts.
+	insertStatement := fmt.Sprintf("CREATE TRIGGER %s AFTER INSERT ON %s WHEN NEW.%s IS NULL OR NEW.%s IS NULL BEGIN UPDATE %s SET %s = COALESCE(%s, CURRENT_TIMESTAMP), %s = COALESCE(%s, CURRENT_TIMESTAMP) WHERE %s IS NEW.%s; END", quoteIdentifier(insertTrigger), quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.idField.column), quoteIdentifier(model.idField.column))
+	if _, err := transaction.ExecContext(ctx, insertStatement); err != nil {
+		return fmt.Errorf("activeso: create timestamp insert trigger for %s: %w", model.tableName, err)
+	}
+
+	// Restrict the trigger to data columns so its timestamp write cannot recursively trigger itself.
+	updateStatement := fmt.Sprintf("CREATE TRIGGER %s AFTER UPDATE OF %s ON %s BEGIN UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s IS NEW.%s; END", quoteIdentifier(updateTrigger), strings.Join(updatedColumns, ", "), quoteIdentifier(model.tableName), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.idField.column), quoteIdentifier(model.idField.column))
+	if _, err := transaction.ExecContext(ctx, updateStatement); err != nil {
+		return fmt.Errorf("activeso: create timestamp update trigger for %s: %w", model.tableName, err)
+	}
+
+	return nil
+}
+
+// timestampTriggerName returns a database-wide stable name for one managed table trigger.
+func (model *model[T]) timestampTriggerName(kind string) string {
+	// Initialize Variables
+	name := strings.ToLower(model.tableName)
+
+	return "activeso_" + hex.EncodeToString([]byte(name)) + "_timestamps_" + kind
 }
 
 // columnDefinition derives a Turso column definition for one model field.

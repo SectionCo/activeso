@@ -465,6 +465,70 @@ func TestAutoMigrateConstraints(t *testing.T) {
 	}
 }
 
+// TestAutoMigrateTimestamps verifies fresh tables receive timestamp defaults and refresh triggers.
+func TestAutoMigrateTimestamps(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[testUser](db)
+	var createdAt, updatedAt, createdDefault, updatedDefault string
+
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT dflt_value FROM pragma_table_info('users') WHERE name = 'activeso_created_at'`).Scan(&createdDefault); err != nil || createdDefault != "CURRENT_TIMESTAMP" {
+		t.Fatalf("created timestamp default = %q, error = %v", createdDefault, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT dflt_value FROM pragma_table_info('users') WHERE name = 'activeso_updated_at'`).Scan(&updatedDefault); err != nil || updatedDefault != "CURRENT_TIMESTAMP" {
+		t.Fatalf("updated timestamp default = %q, error = %v", updatedDefault, err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES ('timestamped', 'timestamped@example.com')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&createdAt, &updatedAt); err != nil || createdAt == "" || updatedAt == "" {
+		t.Fatalf("insert timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
+	}
+
+	// Force a distinct prior value so the update-trigger assertion is independent of clock precision.
+	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_updated_at = 'before' WHERE id = 'timestamped'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET email = 'changed@example.com' WHERE id = 'timestamped'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&updatedAt); err != nil || updatedAt == "before" {
+		t.Fatalf("updated timestamp = %q, error = %v", updatedAt, err)
+	}
+}
+
+// TestAutoMigrateLegacyTimestamps verifies old tables are populated and protected by timestamp triggers.
+func TestAutoMigrateLegacyTimestamps(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[testUser](db)
+	var createdAt, updatedAt string
+
+	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES ('existing', 'existing@example.com')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'existing'").Scan(&createdAt, &updatedAt); err != nil || createdAt == "" || updatedAt == "" {
+		t.Fatalf("backfilled timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES ('new', 'new@example.com')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'new'").Scan(&createdAt, &updatedAt); err != nil || createdAt == "" || updatedAt == "" {
+		t.Fatalf("triggered timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
+	}
+}
+
 // TestCreateTranslatesAuthoritativeUniqueViolation reports database-enforced races as UniqueError.
 func TestCreateTranslatesAuthoritativeUniqueViolation(t *testing.T) {
 	// Initialize Variables
@@ -934,8 +998,8 @@ func TestAutoMigrateMatchesColumnsCaseInsensitively(t *testing.T) {
 	if err := model.AutoMigrate(ctx); err != nil {
 		t.Fatalf("AutoMigrate() error = %v", err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('case_column_users')").Scan(&columns); err != nil || columns != 2 {
-		t.Fatalf("column count = %d, error = %v, want 2 columns", columns, err)
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('case_column_users')").Scan(&columns); err != nil || columns != 4 {
+		t.Fatalf("column count = %d, error = %v, want 4 columns", columns, err)
 	}
 }
 
