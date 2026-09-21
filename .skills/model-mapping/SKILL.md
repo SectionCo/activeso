@@ -4,7 +4,7 @@
 
 - A model embeds `activeso.Record` and has exactly one primary key.
 - `activeso:"primary_key"` explicitly selects a primary-key field. Without that tag, the field mapped to `id` is the primary key.
-- Primary keys must be immutable scalar Go types: strings, booleans, signed or unsigned integers, and floats. Mutable values such as `[]byte` are rejected during model construction.
+- Primary keys must be immutable scalar Go types: strings, booleans, signed integers, `uint8`/`uint16`/`uint32`, and floats. `uint` and `uint64` are rejected during model construction because their full range exceeds Turso's signed 64-bit INTEGER representation; mutable values such as `[]byte` are also rejected.
 
 ## Additive migrations and nullable reads
 

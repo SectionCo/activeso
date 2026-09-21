@@ -121,6 +121,18 @@ type mutablePrimaryKeyUser struct {
 	ID []byte `db:"id"`
 }
 
+type uintPrimaryKeyUser struct {
+	Record
+
+	ID uint `db:"id"`
+}
+
+type uint64PrimaryKeyUser struct {
+	Record
+
+	ID uint64 `db:"id"`
+}
+
 type uniqueCollisionFirst struct {
 	Record
 
@@ -725,7 +737,7 @@ func TestUniqueIndexNamesAreUnambiguous(t *testing.T) {
 	}
 }
 
-// TestModelRejectsInvalidPrimaryKeyMappings rejects ambiguous and mutable model identities.
+// TestModelRejectsInvalidPrimaryKeyMappings rejects ambiguous and unrepresentable model identities.
 func TestModelRejectsInvalidPrimaryKeyMappings(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
@@ -734,6 +746,8 @@ func TestModelRejectsInvalidPrimaryKeyMappings(t *testing.T) {
 	assertModelPanics(t, func() { Model[duplicateColumnUser](db) })
 	assertModelPanics(t, func() { Model[multiplePrimaryKeyUser](db) })
 	assertModelPanics(t, func() { Model[mutablePrimaryKeyUser](db) })
+	assertModelPanics(t, func() { Model[uintPrimaryKeyUser](db) })
+	assertModelPanics(t, func() { Model[uint64PrimaryKeyUser](db) })
 }
 
 // assertModelPanics confirms invalid model declarations fail before touching the database.

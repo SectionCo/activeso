@@ -565,16 +565,16 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	return model, nil
 }
 
-// validPrimaryKeyType reports whether typeOfT is a non-null mutable-safe SQL scalar.
+// validPrimaryKeyType reports whether typeOfT is a mutable-safe SQL scalar representable by Turso.
 func validPrimaryKeyType(typeOfT reflect.Type) bool {
 	// Initialize Variables
 	kind := typeOfT.Kind()
 
-	// Reject slices, maps, pointers, and nullable wrapper types that can alias or encode NULL.
+	// Reject values that can alias, encode NULL, or exceed Turso's signed integer range.
 	switch kind {
 	case reflect.String, reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uint8, reflect.Uint16, reflect.Uint32,
 		reflect.Float32, reflect.Float64:
 		return true
 	default:
