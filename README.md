@@ -132,7 +132,9 @@ type User struct {
 | `unique` | Creates a stable, unambiguous unique index for the table and column. | `Create` and `Save` check for an existing value first and return an error matching `activeso.ErrUnique`; the Turso index remains the concurrency-safe authority. |
 | `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use an immutable scalar type. |
 
-If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. An unknown `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
+If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. 
+
+An unknown `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
 
 ## API
 
