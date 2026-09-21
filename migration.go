@@ -268,14 +268,77 @@ func migrationSchema(ctx context.Context, transaction *sql.Tx, table string) (st
 	return definition, indexes, nil
 }
 
+// tableWithoutRowID reports whether definition declares the SQLite WITHOUT ROWID table option.
+func tableWithoutRowID(definition string) (bool, error) {
+	// Initialize Variables
+	var tokens []schemaToken
+	var err error
+	depth := 0
+
+	tokens, err = schemaTokens(definition)
+	if err != nil {
+		return false, err
+	}
+	for index, token := range tokens {
+		if schemaKeyword(token, "(") {
+			depth++
+			continue
+		}
+		if schemaKeyword(token, ")") {
+			depth--
+			continue
+		}
+		if depth == 0 && schemaKeyword(token, "WITHOUT") && index+1 < len(tokens) && schemaKeyword(tokens[index+1], "ROWID") {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// migrationCopyColumns returns columns that preserve either a hidden row ID or a WITHOUT ROWID table's rows.
+func migrationCopyColumns(columns []string, column string, withoutRowID bool) ([]string, error) {
+	// Initialize Variables
+	var copyColumns []string
+	rowID := ""
+
+	// Preserve hidden row IDs for ordinary tables; WITHOUT ROWID tables have none to copy.
+	if !withoutRowID {
+		for _, candidate := range []string{"rowid", "_rowid_", "oid"} {
+			shadowed := false
+			for _, name := range columns {
+				if strings.EqualFold(name, candidate) {
+					shadowed = true
+				}
+			}
+			if strings.EqualFold(column, candidate) {
+				shadowed = true
+			}
+			if !shadowed {
+				rowID = candidate
+				break
+			}
+		}
+		if rowID == "" {
+			return nil, fmt.Errorf("activeso: cannot safely preserve shadowed row IDs")
+		}
+		copyColumns = append(copyColumns, quoteIdentifier(rowID))
+	}
+	for _, name := range columns {
+		copyColumns = append(copyColumns, quoteIdentifier(name))
+	}
+
+	return copyColumns, nil
+}
+
 // rebuildTable changes one existing column while preserving the remaining stored schema and rows.
 func (model *model[T]) rebuildTable(ctx context.Context, column, operation, columnType string) error {
 	// Initialize Variables
 	transaction, err := model.db.BeginTx(ctx, nil)
 	temporaryTable := "activeso_" + model.tableName + "_rebuild"
 	var copyColumns []string
-	rowID := ""
 	var definition, statement string
+	var withoutRowID bool
 	var indexes, columns []string
 
 	if err != nil {
@@ -304,29 +367,14 @@ func (model *model[T]) rebuildTable(ctx context.Context, column, operation, colu
 	if err != nil {
 		return err
 	}
+	withoutRowID, err = tableWithoutRowID(definition)
+	if err != nil {
+		return err
+	}
 
-	// Preserve hidden row IDs, including tables with an INTEGER PRIMARY KEY alias.
-	for _, candidate := range []string{"rowid", "_rowid_", "oid"} {
-		shadowed := false
-		for _, name := range columns {
-			if strings.EqualFold(name, candidate) {
-				shadowed = true
-			}
-		}
-		if strings.EqualFold(column, candidate) {
-			shadowed = true
-		}
-		if !shadowed {
-			rowID = candidate
-			break
-		}
-	}
-	if rowID == "" {
-		return fmt.Errorf("activeso: cannot safely preserve shadowed row IDs")
-	}
-	copyColumns = append(copyColumns, quoteIdentifier(rowID))
-	for _, name := range columns {
-		copyColumns = append(copyColumns, quoteIdentifier(name))
+	copyColumns, err = migrationCopyColumns(columns, column, withoutRowID)
+	if err != nil {
+		return err
 	}
 
 	// Build and populate the replacement before dropping the original table.

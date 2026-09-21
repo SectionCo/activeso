@@ -238,6 +238,33 @@ func TestMigrationIndexRollback(t *testing.T) {
 	}
 }
 
+// TestMigrationSupportsWithoutRowIDTables omits hidden row IDs from the copy plan for those tables.
+func TestMigrationSupportsWithoutRowIDTables(t *testing.T) {
+	// Initialize Variables
+	definition := "CREATE TABLE migration_users (id TEXT PRIMARY KEY, email TEXT, nickname TEXT) WITHOUT ROWID"
+	statement, columns, err := migrationDefinition(definition, "replacement", "email", "type", "INTEGER")
+	withoutRowID := false
+	var copyColumns []string
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutRowID, err = tableWithoutRowID(definition)
+	if err != nil || !withoutRowID {
+		t.Fatalf("WITHOUT ROWID detection = %t, error = %v", withoutRowID, err)
+	}
+	copyColumns, err = migrationCopyColumns(columns, "email", withoutRowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(statement, "WITHOUT ROWID") {
+		t.Fatalf("replacement statement lost WITHOUT ROWID: %s", statement)
+	}
+	if strings.Join(copyColumns, ", ") != `"id", "email", "nickname"` {
+		t.Fatalf("copy columns = %v, want declared columns only", copyColumns)
+	}
+}
+
 // TestMigrationPreservesIntegerPrimaryKey keeps an existing integer ID despite a different model ID type.
 func TestMigrationPreservesIntegerPrimaryKey(t *testing.T) {
 	// Initialize Variables

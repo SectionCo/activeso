@@ -1,6 +1,6 @@
 # Targeted Column Migrations
 
-`DropColumn`, `ChangeColumnType`, and `SetNotNull` use the existing CREATE TABLE SQL from `sqlite_schema`, not a replacement schema inferred from all model fields. Only the named column changes. Model-omitted columns, unrelated types, defaults, collations, CHECK/UNIQUE constraints, and existing explicit index definitions survive supported rebuilds. Hidden row IDs are copied as well. Model tags do not implicitly add or remove unrelated constraints during these operations.
+`DropColumn`, `ChangeColumnType`, and `SetNotNull` use the existing CREATE TABLE SQL from `sqlite_schema`, not a replacement schema inferred from all model fields. Only the named column changes. Model-omitted columns, unrelated types, defaults, collations, CHECK/UNIQUE constraints, and existing explicit index definitions survive supported rebuilds. Hidden row IDs are copied for ordinary tables; `WITHOUT ROWID` tables copy only their declared columns. Model tags do not implicitly add or remove unrelated constraints during these operations.
 
 `migration.go` tokenizes quotes, comments, and nested parentheses to preserve SQL outside the requested edit. Original indexes are recreated after replacement. Creation, copying, replacement, and index restoration share a transaction, so any failure rolls back. Missing target columns are errors.
 
