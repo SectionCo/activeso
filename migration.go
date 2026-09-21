@@ -152,6 +152,12 @@ func migrationDefinition(statement, temporaryTable, column, operation, columnTyp
 			if strings.EqualFold(first.text, column) {
 				found = true
 				if operation == "drop" {
+					// Moving identity requires a dedicated migration that preserves the primary-key constraint.
+					for _, part := range definition[1:] {
+						if schemaKeyword(part, "PRIMARY") {
+							return "", nil, fmt.Errorf("activeso: cannot safely drop an inline primary-key column")
+						}
+					}
 					start = index + 1
 					continue
 				}

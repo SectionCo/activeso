@@ -108,6 +108,29 @@ func TestDropColumnPreservesOtherColumns(t *testing.T) {
 	}
 }
 
+// TestDropColumnRejectsInlinePrimaryKey keeps identity migrations from removing their constraint.
+func TestDropColumnRejectsInlinePrimaryKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[migrationUserMovedID](db)
+	var before, after string
+	var err error
+
+	migrationExec(t, db, "CREATE TABLE migration_users (id TEXT PRIMARY KEY, new_id TEXT, email TEXT)")
+	if err := db.QueryRowContext(ctx, "SELECT sql FROM sqlite_schema WHERE name = 'migration_users'").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+
+	err = model.DropColumn(ctx, "id")
+	if err == nil {
+		t.Fatal("DropColumn() accepted an inline primary-key column")
+	}
+	if err := db.QueryRowContext(ctx, "SELECT sql FROM sqlite_schema WHERE name = 'migration_users'").Scan(&after); err != nil || after != before {
+		t.Fatalf("DropColumn() changed schema to %q, error = %v", after, err)
+	}
+}
+
 // TestMigrationRejectsDependencies verifies unsupported rebuilds leave schema and rows intact.
 func TestMigrationRejectsDependencies(t *testing.T) {
 	// Initialize Variables

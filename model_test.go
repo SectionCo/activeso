@@ -50,6 +50,13 @@ type migrationUserIntegerEmail struct {
 	Email int    `db:"email"`
 }
 
+type migrationUserMovedID struct {
+	Record
+
+	NewID string `db:"new_id" activeso:"primary_key"`
+	Email string `db:"email"`
+}
+
 type migrationUserRequiredNickname struct {
 	Record
 
@@ -205,6 +212,14 @@ func (migrationUserIntegerEmail) TableName() string {
 
 // TableName maps migrationUserRequiredNickname to the shared migration test table.
 func (migrationUserRequiredNickname) TableName() string {
+	// Initialize Variables
+	name := "migration_users"
+
+	return name
+}
+
+// TableName maps migrationUserMovedID to the shared migration test table.
+func (migrationUserMovedID) TableName() string {
 	// Initialize Variables
 	name := "migration_users"
 
