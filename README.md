@@ -41,6 +41,11 @@ func example(ctx context.Context) error {
 	db := sql.OpenDB(connector)
 	defer db.Close()
 
+	// If using ActiveSo 'belongs_to', we recommend enabling enforcement for belongs_to foreign-key constraints on this connection.
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return err
+	}
+
 	// Initialize the User model.
 	userModel := activeso.Model[User](db)
 
@@ -120,11 +125,12 @@ type User struct {
 Add comma-separated constraint options in an `activeso` struct tag:
 
 ```go
-type User struct {
+type City struct {
 	activeso.Record
 
-	ID    string `db:"id"`
-	Email string `db:"email" activeso:"not_null,unique"`
+	ID       string `db:"id"`
+	Name     string `db:"name"`
+	RegionID string `db:"region_id" activeso:"belongs_to=regions(id)"`
 }
 ```
 
@@ -132,11 +138,35 @@ type User struct {
 | --- | --- | --- |
 | `not_null` | Adds `NOT NULL` when creating a table. ActiveSo refuses to add a new required column to an existing table automatically. | Turso rejects `NULL` values. |
 | `unique` | Creates a stable, unambiguous unique index for the table and column. | `Create` and `Save` check for an existing value first and return an error matching `activeso.ErrUnique`; the Turso index remains the concurrency-safe authority. |
+| `index` | Creates a stable, unambiguous non-unique index for the table and column. | Makes equality lookups such as `FindBy` eligible to use a Turso index. |
 | `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use a supported immutable scalar type. |
+| `belongs_to=table(column)` | Adds `REFERENCES table(column)` when creating a table or adding a missing nullable column. It does not attach a foreign key to an existing column. | Turso rejects non-`NULL` values that do not exist in the referenced column when foreign-key enforcement is enabled. |
 
 If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. Supported primary-key types are strings, booleans, signed integers, `uint8`, `uint16`, `uint32`, and floats. `uint` and `uint64` are rejected because their full range cannot be represented by Turso's signed 64-bit `INTEGER`.
 
-An unknown `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
+`belongs_to` targets must use simple identifiers in `table(column)` form. An unknown or malformed `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
+
+`belongs_to=table(column)` creates an inline foreign key on the tagged scalar column. For example, `RegionID` above becomes `region_id TEXT REFERENCES regions(id)`. Add `not_null` when the relationship is required:
+
+```go
+RegionID string `db:"region_id" activeso:"not_null,belongs_to=regions(id)"`
+```
+
+## References
+
+- [Turso Go SDK](https://docs.turso.tech/sdk/go)
+- [SQLite foreign-key support](https://www.sqlite.org/foreignkeys.html)
+
+Enable foreign-key enforcement after opening the Turso database connection:
+
+```go
+db := sql.OpenDB(connector)
+if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+	return err
+}
+```
+
+`PRAGMA foreign_keys` is connection-specific in SQLite-compatible databases. Enable it before using models with `belongs_to=table(column)` constraints; if an application uses a connection pool, ensure every connection is configured accordingly.
 
 ## API
 
@@ -147,6 +177,7 @@ An unknown `activeso` constraint causes `activeso.Model[T](db)` to panic so sche
 - [Explicit migrations](#explicit-migrations)
 - [Create](#create)
 - [Find](#find)
+- [FindBy](#findby)
 - [All](#all)
 - [Where](#where)
 - [OrderBy](#orderby)
@@ -167,7 +198,7 @@ userModel := activeso.Model[User](db)
 
 ### AutoMigrate
 
-`AutoMigrate(ctx)` creates the table, adds missing nullable columns, and creates tagged unique indexes. Call it once during application setup or deployment, separately from normal record operations.
+`AutoMigrate(ctx)` creates the table, adds missing nullable columns, and creates tagged unique and ordinary indexes. Call it once during application setup or deployment, separately from normal record operations.
 
 For an existing table, the model's ID column must be protected by a sole primary key or a single-column unique index. ActiveSo rejects composite primary keys that do not make the modeled ID independently unique, preventing `Save` and `Delete` from targeting multiple rows.
 
@@ -222,6 +253,21 @@ user, err := userModel.Create(ctx, User{Email: "hello@null.live"})
 
 ```go
 user, err := userModel.Find(ctx, "8b291a21-e69b-47ed-a3e0-f43e7609b26d")
+```
+
+### FindBy
+
+`FindBy(ctx, column, value)` loads every record whose mapped `column` equals `value`. The column name must exist on the model, so ActiveSo quotes it safely rather than accepting arbitrary SQL. Add `index` to frequently searched non-unique fields:
+
+```go
+type City struct {
+	activeso.Record
+
+	ID   string `db:"id"`
+	Name string `db:"name" activeso:"not_null,index"`
+}
+
+cities, err := cityModel.FindBy(ctx, "name", "Portland")
 ```
 
 ### All

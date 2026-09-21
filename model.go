@@ -21,14 +21,17 @@ type tableNamer interface {
 }
 
 type field struct {
-	index      int
-	column     string
-	goType     reflect.Type
-	isID       bool
-	isVector   bool
-	notNull    bool
-	unique     bool
-	primaryKey bool
+	index           int
+	column          string
+	goType          reflect.Type
+	belongsToTable  string
+	belongsToColumn string
+	isID            bool
+	isVector        bool
+	notNull         bool
+	unique          bool
+	indexed         bool
+	primaryKey      bool
 }
 
 const (
@@ -112,6 +115,18 @@ func (model *model[T]) Find(ctx context.Context, id any) (*T, error) {
 	query := model.Where(fmt.Sprintf("%s = ?", quoteIdentifier(model.idField.column)), id)
 
 	return query.First(ctx)
+}
+
+// FindBy loads and binds every record whose mapped column equals value.
+func (model *model[T]) FindBy(ctx context.Context, column string, value any) ([]*T, error) {
+	// Initialize Variables
+	field, found := model.fieldForColumn(column)
+
+	if !found {
+		return nil, fmt.Errorf("activeso: column %s is not defined on %s", column, model.tableName)
+	}
+
+	return model.Where(fmt.Sprintf("%s = ?", quoteIdentifier(field.column)), value).All(ctx)
 }
 
 // All loads and binds every row in the model's table.
@@ -206,6 +221,9 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 		return err
 	}
 	if err := model.createUniqueIndexes(ctx, transaction); err != nil {
+		return err
+	}
+	if err := model.createIndexes(ctx, transaction); err != nil {
 		return err
 	}
 	if err := model.createTimestampTriggers(ctx, transaction); err != nil {
@@ -552,7 +570,7 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 		if column == "" {
 			continue
 		}
-		notNull, unique, primaryKey, err := fieldConstraints(structField)
+		notNull, unique, indexed, primaryKey, belongsToTable, belongsToColumn, err := fieldConstraints(structField)
 		if err != nil {
 			return nil, err
 		}
@@ -562,7 +580,7 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 		}
 		columns[normalizedColumn] = struct{}{}
 
-		field := field{index: index, column: column, goType: structField.Type, isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique, primaryKey: primaryKey}
+		field := field{index: index, column: column, goType: structField.Type, belongsToTable: belongsToTable, belongsToColumn: belongsToColumn, isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique, indexed: indexed, primaryKey: primaryKey}
 		fields = append(fields, field)
 		if primaryKey {
 			explicitPrimaryKeyCount++
@@ -665,13 +683,16 @@ func columnName(structField reflect.StructField) string {
 }
 
 // fieldConstraints parses supported ActiveSo schema constraints from a struct field.
-func fieldConstraints(structField reflect.StructField) (bool, bool, bool, error) {
+func fieldConstraints(structField reflect.StructField) (bool, bool, bool, bool, string, string, error) {
 	// Initialize Variables
 	tag := structField.Tag.Get("activeso")
 	constraints := strings.Split(tag, ",")
 	notNull := false
 	unique := false
+	indexed := false
 	primaryKey := false
+	belongsToTable := ""
+	belongsToColumn := ""
 
 	for _, constraint := range constraints {
 		switch constraint {
@@ -681,14 +702,63 @@ func fieldConstraints(structField reflect.StructField) (bool, bool, bool, error)
 			notNull = true
 		case "unique":
 			unique = true
+		case "index":
+			indexed = true
 		case "primary_key":
 			primaryKey = true
 		default:
-			return false, false, false, fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
+			if !strings.HasPrefix(constraint, "belongs_to=") {
+				return false, false, false, false, "", "", fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
+			}
+			if belongsToTable != "" {
+				return false, false, false, false, "", "", fmt.Errorf("activeso: duplicate belongs_to constraint on field %s", structField.Name)
+			}
+
+			var err error
+			belongsToTable, belongsToColumn, err = belongsToTarget(strings.TrimPrefix(constraint, "belongs_to="))
+			if err != nil {
+				return false, false, false, false, "", "", fmt.Errorf("activeso: invalid belongs_to constraint on field %s: %w", structField.Name, err)
+			}
 		}
 	}
 
-	return notNull, unique, primaryKey, nil
+	return notNull, unique, indexed, primaryKey, belongsToTable, belongsToColumn, nil
+}
+
+// belongsToTarget validates and splits a table(column) foreign-key target.
+func belongsToTarget(value string) (string, string, error) {
+	// Initialize Variables
+	openParenthesis := strings.IndexByte(value, '(')
+	table := ""
+	column := ""
+
+	if openParenthesis <= 0 || !strings.HasSuffix(value, ")") || strings.Count(value, "(") != 1 || strings.Count(value, ")") != 1 {
+		return "", "", fmt.Errorf("expected table(column)")
+	}
+	table = value[:openParenthesis]
+	column = value[openParenthesis+1 : len(value)-1]
+	if !schemaIdentifier(table) || !schemaIdentifier(column) {
+		return "", "", fmt.Errorf("target identifiers must contain only letters, digits, and underscores")
+	}
+
+	return table, column, nil
+}
+
+// schemaIdentifier reports whether value is a non-empty identifier safe for generated schema SQL.
+func schemaIdentifier(value string) bool {
+	// Initialize Variables
+	runes := []rune(value)
+
+	if len(runes) == 0 || !(unicode.IsLetter(runes[0]) || runes[0] == '_') {
+		return false
+	}
+	for _, character := range runes[1:] {
+		if !(unicode.IsLetter(character) || unicode.IsDigit(character) || character == '_') {
+			return false
+		}
+	}
+
+	return true
 }
 
 // snakeCase converts an exported Go identifier into a lower snake_case identifier.
@@ -878,6 +948,25 @@ func (model *model[T]) createUniqueIndexes(ctx context.Context, transaction *sql
 	return nil
 }
 
+// createIndexes creates every non-unique index declared by the current model.
+func (model *model[T]) createIndexes(ctx context.Context, transaction *sql.Tx) error {
+	// Initialize Variables
+	fields := model.fields
+
+	for _, field := range fields {
+		if !field.indexed || field.unique || field.isID {
+			continue
+		}
+
+		statement := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", quoteIdentifier(model.indexName(field)), quoteIdentifier(model.tableName), quoteIdentifier(field.column))
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("activeso: create index for %s.%s: %w", model.tableName, field.column, err)
+		}
+	}
+
+	return nil
+}
+
 // createTableStatement builds the idempotent CREATE TABLE statement for the model.
 func (model *model[T]) createTableStatement() (string, error) {
 	// Initialize Variables
@@ -1029,6 +1118,9 @@ func (model *model[T]) columnDefinition(field field, includeRequired bool) (stri
 	}
 	if includeRequired && field.notNull {
 		definition += " NOT NULL"
+	}
+	if field.belongsToTable != "" {
+		definition += " REFERENCES " + quoteIdentifier(field.belongsToTable) + "(" + quoteIdentifier(field.belongsToColumn) + ")"
 	}
 
 	return definition, nil
@@ -1203,6 +1295,18 @@ func (model *model[T]) uniqueIndexName(field field) string {
 	table := hex.EncodeToString([]byte(tableName))
 	column := hex.EncodeToString([]byte(columnName))
 	name := "activeso_" + table + "_" + column + "_unique"
+
+	return name
+}
+
+// indexName returns an unambiguous stable name used for one field's ordinary index.
+func (model *model[T]) indexName(field field) string {
+	// Initialize Variables
+	tableName := strings.ToLower(model.tableName)
+	columnName := strings.ToLower(field.column)
+	table := hex.EncodeToString([]byte(tableName))
+	column := hex.EncodeToString([]byte(columnName))
+	name := "activeso_" + table + "_" + column + "_index"
 
 	return name
 }
