@@ -66,6 +66,76 @@ type nullableStringUser struct {
 	Nickname sql.NullString `db:"nickname"`
 }
 
+type idOnlyUser struct {
+	Record
+
+	ID string `db:"id"`
+}
+
+type numericMigrationV1 struct {
+	Record
+
+	ID string `db:"id"`
+}
+
+type numericMigrationV2 struct {
+	Record
+
+	ID      string  `db:"id"`
+	Count   int     `db:"count"`
+	Score   float64 `db:"score"`
+	Enabled bool    `db:"enabled"`
+}
+
+type explicitPrimaryKeyUser struct {
+	Record
+
+	ExternalID string `db:"external_id" activeso:"primary_key"`
+	Email      string `db:"email"`
+}
+
+type duplicateColumnUser struct {
+	Record
+
+	ID    string `db:"id"`
+	Email string `db:"email"`
+	Alias string `db:"EMAIL"`
+}
+
+type multiplePrimaryKeyUser struct {
+	Record
+
+	ID         string `db:"id" activeso:"primary_key"`
+	ExternalID string `db:"external_id" activeso:"primary_key"`
+}
+
+type mutablePrimaryKeyUser struct {
+	Record
+
+	ID []byte `db:"id"`
+}
+
+type uniqueCollisionFirst struct {
+	Record
+
+	ID  string `db:"id"`
+	Baz string `db:"baz" activeso:"unique"`
+}
+
+type uniqueCollisionSecond struct {
+	Record
+
+	ID     string `db:"id"`
+	BarBaz string `db:"bar_baz" activeso:"unique"`
+}
+
+type caseColumnUser struct {
+	Record
+
+	ID    string `db:"id"`
+	Email string `db:"email"`
+}
+
 // TableName maps testUser to the temporary users table.
 func (testUser) TableName() string {
 	// Initialize Variables
@@ -118,6 +188,62 @@ func (migrationUserRequiredNickname) TableName() string {
 func (nullableStringUser) TableName() string {
 	// Initialize Variables
 	name := "migration_users"
+
+	return name
+}
+
+// TableName maps idOnlyUser to the temporary ID-only users table.
+func (idOnlyUser) TableName() string {
+	// Initialize Variables
+	name := "id_only_users"
+
+	return name
+}
+
+// TableName maps numeric migration models to their shared temporary table.
+func (numericMigrationV1) TableName() string {
+	// Initialize Variables
+	name := "numeric_migration_users"
+
+	return name
+}
+
+// TableName maps numeric migration models to their shared temporary table.
+func (numericMigrationV2) TableName() string {
+	// Initialize Variables
+	name := "numeric_migration_users"
+
+	return name
+}
+
+// TableName maps explicitPrimaryKeyUser to its temporary users table.
+func (explicitPrimaryKeyUser) TableName() string {
+	// Initialize Variables
+	name := "explicit_primary_key_users"
+
+	return name
+}
+
+// TableName maps the first collision model to its deliberately ambiguous legacy table name.
+func (uniqueCollisionFirst) TableName() string {
+	// Initialize Variables
+	name := "foo_bar"
+
+	return name
+}
+
+// TableName maps the second collision model to its deliberately ambiguous legacy table name.
+func (uniqueCollisionSecond) TableName() string {
+	// Initialize Variables
+	name := "foo"
+
+	return name
+}
+
+// TableName maps caseColumnUser to its temporary case-sensitive spelling test table.
+func (caseColumnUser) TableName() string {
+	// Initialize Variables
+	name := "case_column_users"
 
 	return name
 }
@@ -326,7 +452,7 @@ func TestExplicitMigrations(t *testing.T) {
 		t.Fatal("DropColumn() left nickname queryable")
 	}
 
-	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX activeso_migration_users_email_unique ON migration_users (email)"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX "+quoteIdentifier(versionOne.uniqueIndexName(field{column: "email"}))+" ON migration_users (email)"); err != nil {
 		t.Fatalf("create explicit unique index: %v", err)
 	}
 	if err := versionOne.DropUnique(ctx, "email"); err != nil {
@@ -458,6 +584,140 @@ func TestNullStringPreservesNULL(t *testing.T) {
 	if !empty.Nickname.Valid || empty.Nickname.String != "" {
 		t.Fatalf("empty nickname = %#v, want valid empty string", empty.Nickname)
 	}
+}
+
+// TestModelEdgeCases verifies validation and persistence behavior for reviewed boundary cases.
+func TestModelEdgeCases(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	idOnlyModel := Model[idOnlyUser](db)
+	explicitKeyModel := Model[explicitPrimaryKeyUser](db)
+	var nilUser *testUser
+
+	if err := idOnlyModel.AutoMigrate(ctx); err != nil {
+		t.Fatalf("ID-only AutoMigrate() error = %v", err)
+	}
+	idOnly, err := idOnlyModel.Create(ctx, idOnlyUser{ID: "only"})
+	if err != nil {
+		t.Fatalf("ID-only Create() error = %v", err)
+	}
+	if err := idOnly.Save(ctx); err != nil {
+		t.Fatalf("ID-only Save() error = %v", err)
+	}
+	if _, err := Model[testUser](db).Bind(nilUser); !errors.Is(err, ErrUnboundRecord) {
+		t.Fatalf("Bind(nil) error = %v, want ErrUnboundRecord", err)
+	}
+
+	if err := explicitKeyModel.AutoMigrate(ctx); err != nil {
+		t.Fatalf("explicit primary key AutoMigrate() error = %v", err)
+	}
+	created, err := explicitKeyModel.Create(ctx, explicitPrimaryKeyUser{ExternalID: "external", Email: "key@null.live"})
+	if err != nil {
+		t.Fatalf("explicit primary key Create() error = %v", err)
+	}
+	found, err := explicitKeyModel.Find(ctx, "external")
+	if err != nil || found.Email != created.Email {
+		t.Fatalf("explicit primary key Find() = %#v, %v", found, err)
+	}
+}
+
+// TestAutoMigrateHandlesNullableScalars keeps legacy rows readable after scalar additions.
+func TestAutoMigrateHandlesNullableScalars(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	versionOne := Model[numericMigrationV1](db)
+	versionTwo := Model[numericMigrationV2](db)
+
+	if err := versionOne.AutoMigrate(ctx); err != nil {
+		t.Fatalf("v1 AutoMigrate() error = %v", err)
+	}
+	if _, err := versionOne.Create(ctx, numericMigrationV1{ID: "existing"}); err != nil {
+		t.Fatalf("v1 Create() error = %v", err)
+	}
+	if err := versionTwo.AutoMigrate(ctx); err != nil {
+		t.Fatalf("v2 AutoMigrate() error = %v", err)
+	}
+	migrated, err := versionTwo.Find(ctx, "existing")
+	if err != nil {
+		t.Fatalf("v2 Find() error = %v", err)
+	}
+	if migrated.Count != 0 || migrated.Score != 0 || migrated.Enabled {
+		t.Fatalf("nullable scalar defaults = %#v, want zero values", migrated)
+	}
+}
+
+// TestAutoMigrateMatchesColumnsCaseInsensitively accepts SQLite's case-insensitive identifiers.
+func TestAutoMigrateMatchesColumnsCaseInsensitively(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[caseColumnUser](db)
+	var columns int
+
+	if _, err := db.ExecContext(ctx, "CREATE TABLE case_column_users (id TEXT PRIMARY KEY, Email TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('case_column_users')").Scan(&columns); err != nil || columns != 2 {
+		t.Fatalf("column count = %d, error = %v, want 2 columns", columns, err)
+	}
+}
+
+// TestUniqueIndexNamesAreUnambiguous creates indexes for formerly colliding table-column pairs.
+func TestUniqueIndexNamesAreUnambiguous(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	first := Model[uniqueCollisionFirst](db)
+	second := Model[uniqueCollisionSecond](db)
+
+	if first.uniqueIndexName(first.fields[1]) == second.uniqueIndexName(second.fields[1]) {
+		t.Fatal("unique index names collide")
+	}
+	if err := first.AutoMigrate(ctx); err != nil {
+		t.Fatalf("first AutoMigrate() error = %v", err)
+	}
+	if err := second.AutoMigrate(ctx); err != nil {
+		t.Fatalf("second AutoMigrate() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO foo_bar (id, baz) VALUES ('one', 'duplicate'), ('two', 'duplicate')"); err == nil {
+		t.Fatal("first unique index was not enforced")
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO foo (id, bar_baz) VALUES ('one', 'duplicate'), ('two', 'duplicate')"); err == nil {
+		t.Fatal("second unique index was not enforced")
+	}
+}
+
+// TestModelRejectsInvalidPrimaryKeyMappings rejects ambiguous and mutable model identities.
+func TestModelRejectsInvalidPrimaryKeyMappings(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+
+	assertModelPanics(t, func() { Model[duplicateColumnUser](db) })
+	assertModelPanics(t, func() { Model[multiplePrimaryKeyUser](db) })
+	assertModelPanics(t, func() { Model[mutablePrimaryKeyUser](db) })
+}
+
+// assertModelPanics confirms invalid model declarations fail before touching the database.
+func assertModelPanics(t *testing.T, create func()) {
+	// Initialize Variables
+	recovered := any(nil)
+
+	t.Helper()
+	defer func() {
+		// Initialize Variables
+		recovered = recover()
+
+		if recovered == nil {
+			t.Fatal("Model() did not panic")
+		}
+	}()
+	create()
 }
 
 // openTestDatabase opens a temporary Turso database for an AutoMigrate call.

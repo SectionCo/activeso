@@ -18,13 +18,14 @@ type tableNamer interface {
 }
 
 type field struct {
-	index    int
-	column   string
-	goType   reflect.Type
-	isID     bool
-	isVector bool
-	notNull  bool
-	unique   bool
+	index      int
+	column     string
+	goType     reflect.Type
+	isID       bool
+	isVector   bool
+	notNull    bool
+	unique     bool
+	primaryKey bool
 }
 
 type model[T any] struct {
@@ -44,7 +45,7 @@ type query[T any] struct {
 }
 
 // Model binds an application-defined struct type to its Turso table using db.
-// T must embed activeso.Record and expose an ID field tagged db:"id" or named ID.
+// T must embed activeso.Record and expose one primary_key field or an id column.
 func Model[T any](db *sql.DB) *model[T] {
 	// Initialize Variables
 	model, err := newModel[T](db)
@@ -60,6 +61,9 @@ func Model[T any](db *sql.DB) *model[T] {
 func (model *model[T]) Create(ctx context.Context, value T) (*T, error) {
 	// Initialize Variables
 	record := &value
+	var columns, expressions []string
+	var arguments []any
+	var statement string
 	var err error
 
 	// Generate an ID and validate constrained fields before inserting the record.
@@ -73,12 +77,12 @@ func (model *model[T]) Create(ctx context.Context, value T) (*T, error) {
 		return nil, err
 	}
 
-	columns, expressions, arguments, err := model.insertValues(record)
+	columns, expressions, arguments, err = model.insertValues(record)
 	if err != nil {
 		return nil, err
 	}
 
-	statement := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdentifier(model.tableName), strings.Join(columns, ", "), strings.Join(expressions, ", "))
+	statement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdentifier(model.tableName), strings.Join(columns, ", "), strings.Join(expressions, ", "))
 	if _, err := model.db.ExecContext(ctx, statement, arguments...); err != nil {
 		return nil, fmt.Errorf("activeso: create %s: %w", model.tableName, err)
 	}
@@ -157,7 +161,7 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 		return err
 	}
 	for _, field := range model.fields {
-		if columns[field.column] {
+		if columns[strings.ToLower(field.column)] {
 			continue
 		}
 		if field.notNull {
@@ -283,6 +287,9 @@ func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	if err := model.validateUnique(ctx, record); err != nil {
 		return err
 	}
+	if len(assignments) == 0 {
+		return model.recordExists(ctx, originalID)
+	}
 
 	statement := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", quoteIdentifier(model.tableName), strings.Join(assignments, ", "), quoteIdentifier(model.idField.column))
 	result, err := model.db.ExecContext(ctx, statement, append(arguments, originalID)...)
@@ -296,6 +303,25 @@ func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	}
 	if rows == 0 {
 		return ErrNotFound
+	}
+
+	return nil
+}
+
+// recordExists confirms that a record remains present without issuing an empty update.
+func (model *model[T]) recordExists(ctx context.Context, id any) error {
+	// Initialize Variables
+	statement := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = ? LIMIT 1", quoteIdentifier(model.tableName), quoteIdentifier(model.idField.column))
+	var match int
+	var err error
+
+	// Preserve Save's ErrNotFound behavior for ID-only models.
+	err = model.db.QueryRowContext(ctx, statement, id).Scan(&match)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("activeso: check %s existence: %w", model.tableName, err)
 	}
 
 	return nil
@@ -468,7 +494,9 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	// Initialize Variables
 	typeOfT := reflect.TypeFor[T]()
 	model := &model[T]{db: db}
-	idFound := false
+	fields := make([]field, 0, typeOfT.NumField())
+	columns := make(map[string]struct{}, typeOfT.NumField())
+	explicitPrimaryKeyCount := 0
 
 	// Validate the model shape before extracting database fields.
 	if db == nil {
@@ -477,8 +505,6 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	if typeOfT.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("activeso: model type %s is not a struct", typeOfT)
 	}
-
-	fields := make([]field, 0, typeOfT.NumField())
 
 	for index := range typeOfT.NumField() {
 		structField := typeOfT.Field(index)
@@ -493,29 +519,65 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 		if column == "" {
 			continue
 		}
-		notNull, unique, err := fieldConstraints(structField)
+		notNull, unique, primaryKey, err := fieldConstraints(structField)
 		if err != nil {
 			return nil, err
 		}
+		normalizedColumn := strings.ToLower(column)
+		if _, exists := columns[normalizedColumn]; exists {
+			return nil, fmt.Errorf("activeso: model type %s maps more than one field to column %s", typeOfT, column)
+		}
+		columns[normalizedColumn] = struct{}{}
 
-		field := field{index: index, column: column, goType: structField.Type, isID: column == "id" || structField.Name == "ID", isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique}
+		field := field{index: index, column: column, goType: structField.Type, isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique, primaryKey: primaryKey}
 		fields = append(fields, field)
-		if field.isID {
-			model.idField = field
-			idFound = true
+		if primaryKey {
+			explicitPrimaryKeyCount++
 		}
 	}
 
 	if !hasDirectRecord(typeOfT) {
 		return nil, fmt.Errorf("activeso: model type %s must embed activeso.Record", typeOfT)
 	}
-	if !idFound {
-		return nil, fmt.Errorf("activeso: model type %s must expose an ID field", typeOfT)
+	if explicitPrimaryKeyCount > 1 {
+		return nil, fmt.Errorf("activeso: model type %s declares more than one primary_key field", typeOfT)
+	}
+	for index := range fields {
+		if fields[index].primaryKey || (explicitPrimaryKeyCount == 0 && strings.EqualFold(fields[index].column, "id")) {
+			if model.idField.goType != nil {
+				return nil, fmt.Errorf("activeso: model type %s must expose exactly one primary key", typeOfT)
+			}
+			if !validPrimaryKeyType(fields[index].goType) {
+				return nil, fmt.Errorf("activeso: primary key field %s must use an immutable scalar type", fields[index].column)
+			}
+			fields[index].isID = true
+			model.idField = fields[index]
+		}
+	}
+	if model.idField.goType == nil {
+		return nil, fmt.Errorf("activeso: model type %s must expose an id column or primary_key field", typeOfT)
 	}
 
 	model.tableName = tableName[T](typeOfT)
 	model.fields = fields
 	return model, nil
+}
+
+// validPrimaryKeyType reports whether typeOfT is a non-null mutable-safe SQL scalar.
+func validPrimaryKeyType(typeOfT reflect.Type) bool {
+	// Initialize Variables
+	kind := typeOfT.Kind()
+
+	// Reject slices, maps, pointers, and nullable wrapper types that can alias or encode NULL.
+	switch kind {
+	case reflect.String, reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
 }
 
 // hasDirectRecord reports whether typeOfT anonymously embeds Record.
@@ -570,12 +632,13 @@ func columnName(structField reflect.StructField) string {
 }
 
 // fieldConstraints parses supported ActiveSo schema constraints from a struct field.
-func fieldConstraints(structField reflect.StructField) (bool, bool, error) {
+func fieldConstraints(structField reflect.StructField) (bool, bool, bool, error) {
 	// Initialize Variables
 	tag := structField.Tag.Get("activeso")
 	constraints := strings.Split(tag, ",")
 	notNull := false
 	unique := false
+	primaryKey := false
 
 	for _, constraint := range constraints {
 		switch constraint {
@@ -585,12 +648,14 @@ func fieldConstraints(structField reflect.StructField) (bool, bool, error) {
 			notNull = true
 		case "unique":
 			unique = true
+		case "primary_key":
+			primaryKey = true
 		default:
-			return false, false, fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
+			return false, false, false, fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
 		}
 	}
 
-	return notNull, unique, nil
+	return notNull, unique, primaryKey, nil
 }
 
 // snakeCase converts an exported Go identifier into a lower snake_case identifier.
@@ -646,9 +711,17 @@ func quoteIdentifier(identifier string) string {
 // bind records the model and exact owning pointer in value's embedded Record.
 func (model *model[T]) bind(value *T) error {
 	// Initialize Variables
-	valueOfT := reflect.ValueOf(value).Elem()
-	recordField := valueOfT.FieldByName("Record")
-	originalID, err := model.idValue(value)
+	var valueOfT reflect.Value
+	var recordField reflect.Value
+	var originalID any
+	var err error
+
+	if value == nil {
+		return ErrUnboundRecord
+	}
+	valueOfT = reflect.ValueOf(value).Elem()
+	recordField = valueOfT.FieldByName("Record")
+	originalID, err = model.idValue(value)
 
 	if !recordField.IsValid() || !recordField.CanAddr() || recordField.Type() != reflect.TypeFor[Record]() {
 		return ErrUnboundRecord
@@ -871,7 +944,7 @@ func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx)
 		if err := rows.Scan(&index, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			return nil, fmt.Errorf("activeso: inspect columns for %s: %w", model.tableName, err)
 		}
-		columns[name] = true
+		columns[strings.ToLower(name)] = true
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("activeso: iterate columns for %s: %w", model.tableName, err)
@@ -880,10 +953,12 @@ func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx)
 	return columns, nil
 }
 
-// uniqueIndexName returns the stable name used for one field's unique index.
+// uniqueIndexName returns an unambiguous stable name used for one field's unique index.
 func (model *model[T]) uniqueIndexName(field field) string {
 	// Initialize Variables
-	name := "activeso_" + model.tableName + "_" + field.column + "_unique"
+	table := hex.EncodeToString([]byte(model.tableName))
+	column := hex.EncodeToString([]byte(field.column))
+	name := "activeso_" + table + "_" + column + "_unique"
 
 	return name
 }
@@ -979,10 +1054,30 @@ func (model *model[T]) selectColumns() []string {
 			columns = append(columns, "vector_extract("+column+") AS "+column)
 			continue
 		}
+		if nullableScalar(field.goType) {
+			columns = append(columns, "COALESCE("+column+", 0) AS "+column)
+			continue
+		}
 		columns = append(columns, column)
 	}
 
 	return columns
+}
+
+// nullableScalar reports whether a nullable scalar should read SQL NULL as its Go zero value.
+func nullableScalar(typeOfT reflect.Type) bool {
+	// Initialize Variables
+	kind := typeOfT.Kind()
+
+	switch kind {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
 }
 
 // scan maps the current SQL row into record and leaves Record's private binding untouched.

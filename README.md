@@ -91,12 +91,14 @@ CREATE TABLE users (
 	email TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX activeso_users_email_unique ON users (email);
+CREATE UNIQUE INDEX activeso_7573657273_656d61696c_unique ON users (email);
 ```
 
 `Record` holds ActiveSo's runtime persistence binding and is not a database column. The `db` tags select column names; without them, ActiveSo derives snake_case names from exported field names. The `activeso:"not_null,unique"` tag adds `NOT NULL` and a unique index when `AutoMigrate(ctx)` runs.
 
 When loading a plain Go `string`, ActiveSo reads SQL `NULL` as `""`. This is the default: it lets a nullable string column added by `AutoMigrate` remain readable for pre-existing rows. A plain string write always stores text, so `NULL` and an empty string become indistinguishable after the value is loaded or saved.
+
+Plain numeric and boolean fields also read `NULL` as their Go zero values (`0`, `0.0`, and `false`) so rows created before an additive nullable migration remain readable. Use nullable `database/sql` value types when the distinction between `NULL` and a zero value matters.
 
 Use `sql.NullString` when your application needs to preserve that distinction. Import `database/sql` and use it directly in the model; ActiveSo stores it as `TEXT` and retains `Valid` when loading and saving:
 
@@ -127,9 +129,10 @@ type User struct {
 | Option | `AutoMigrate(ctx)` behavior | Write behavior |
 | --- | --- | --- |
 | `not_null` | Adds `NOT NULL` when creating a table. ActiveSo refuses to add a new required column to an existing table automatically. | Turso rejects `NULL` values. |
-| `unique` | Creates a stable unique index named `activeso_<table>_<column>_unique`. | `Create` and `Save` check for an existing value first and return an error matching `activeso.ErrUnique`; the Turso index remains the concurrency-safe authority. |
+| `unique` | Creates a stable, unambiguous unique index for the table and column. | `Create` and `Save` check for an existing value first and return an error matching `activeso.ErrUnique`; the Turso index remains the concurrency-safe authority. |
+| `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use an immutable scalar type. |
 
-Only `not_null` and `unique` are currently supported. An unknown `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
+If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. An unknown `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
 
 ## API
 
