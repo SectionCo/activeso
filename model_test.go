@@ -19,6 +19,42 @@ type testUser struct {
 	Embedding Vector32 `db:"embedding"`
 }
 
+type foreignKeyRegion struct {
+	Record
+
+	ID   string `db:"id"`
+	Name string `db:"name"`
+}
+
+type foreignKeyCity struct {
+	Record
+
+	ID       string `db:"id"`
+	Name     string `db:"name"`
+	RegionID string `db:"region_id" activeso:"belongs_to=regions(id)"`
+}
+
+type foreignKeySharedPrimaryKeyCity struct {
+	Record
+
+	RegionID string `db:"region_id" activeso:"primary_key,belongs_to=regions(id)"`
+	Name     string `db:"name"`
+}
+
+type indexedCity struct {
+	Record
+
+	ID   string `db:"id"`
+	Name string `db:"name" activeso:"not_null,index"`
+}
+
+type invalidForeignKeyTarget struct {
+	Record
+
+	ID       string `db:"id"`
+	RegionID string `db:"region_id" activeso:"belongs_to=regions(id); DROP TABLE users"`
+}
+
 type migrationUserV1 struct {
 	Record
 
@@ -195,6 +231,30 @@ type caseUniqueUserV3 struct {
 func (testUser) TableName() string {
 	// Initialize Variables
 	name := "users"
+
+	return name
+}
+
+// TableName maps foreignKeyRegion to the regions table used by foreign-key tests.
+func (foreignKeyRegion) TableName() string {
+	// Initialize Variables
+	name := "regions"
+
+	return name
+}
+
+// TableName maps foreignKeyCity to the cities table used by foreign-key tests.
+func (foreignKeyCity) TableName() string {
+	// Initialize Variables
+	name := "cities"
+
+	return name
+}
+
+// TableName maps indexedCity to the cities table used by ordinary-index tests.
+func (indexedCity) TableName() string {
+	// Initialize Variables
+	name := "indexed_cities"
 
 	return name
 }
@@ -386,6 +446,13 @@ func TestModelLifecycle(t *testing.T) {
 	if !reflect.DeepEqual(found.Embedding, inputVector) {
 		t.Fatalf("Find() embedding = %#v, want %#v", found.Embedding, inputVector)
 	}
+	matchingByVector, err := userModel.FindBy(ctx, "embedding", inputVector)
+	if err != nil {
+		t.Fatalf("FindBy() vector error = %v", err)
+	}
+	if len(matchingByVector) != 1 || matchingByVector[0].ID != created.ID {
+		t.Fatalf("FindBy() vector = %#v, want created user", matchingByVector)
+	}
 	if found.CreatedAt.IsZero() || found.UpdatedAt.IsZero() {
 		t.Fatalf("Find() timestamps = %v, %v", found.CreatedAt, found.UpdatedAt)
 	}
@@ -447,6 +514,122 @@ func TestModelLifecycle(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Find() after Delete() error = %v, want ErrNotFound", err)
 	}
+}
+
+// TestAutoMigrateIndexAndFindBy creates ordinary indexes and queries mapped columns safely.
+func TestAutoMigrateIndexAndFindBy(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[indexedCity](db)
+	var indexCount int
+
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", model.indexName(model.fields[1])).Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("managed index count = %d, want 1", indexCount)
+	}
+	if _, err := model.Create(ctx, indexedCity{ID: "portland", Name: "Portland"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Create(ctx, indexedCity{ID: "portland-maine", Name: "Portland"}); err != nil {
+		t.Fatal(err)
+	}
+	cities, err := model.FindBy(ctx, "name", "Portland")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cities) != 2 {
+		t.Fatalf("FindBy() returned %d cities, want 2", len(cities))
+	}
+	if _, err := model.FindBy(ctx, "missing", "Portland"); err == nil {
+		t.Fatal("FindBy() accepted an undefined column")
+	}
+}
+
+// TestAutoMigrateForeignKey creates and enforces belongs_to foreign-key constraints.
+func TestAutoMigrateForeignKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	regionModel := Model[foreignKeyRegion](db)
+	cityModel := Model[foreignKeyCity](db)
+	var table, from, to string
+
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := regionModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cityModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT \"table\", \"from\", \"to\" FROM pragma_foreign_key_list('cities')").Scan(&table, &from, &to); err != nil {
+		t.Fatal(err)
+	}
+	if table != "regions" || from != "region_id" || to != "id" {
+		t.Fatalf("foreign key = %s(%s) -> %s, want region_id -> regions(id)", table, from, to)
+	}
+	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon", Name: "Oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cityModel.Create(ctx, foreignKeyCity{ID: "portland", Name: "Portland", RegionID: "oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cityModel.Create(ctx, foreignKeyCity{ID: "unknown", Name: "Unknown", RegionID: "missing"}); err == nil {
+		t.Fatal("Create() accepted a missing belongs_to target")
+	}
+}
+
+// TestAutoMigrateSharedPrimaryKeyForeignKey enforces belongs_to constraints on explicitly tagged primary keys.
+func TestAutoMigrateSharedPrimaryKeyForeignKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	regionModel := Model[foreignKeyRegion](db)
+	cityModel := Model[foreignKeySharedPrimaryKeyCity](db)
+	var table, from, to string
+
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := regionModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cityModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?)", cityModel.tableName).Scan(&table, &from, &to); err != nil {
+		t.Fatal(err)
+	}
+	if table != "regions" || from != "region_id" || to != "id" {
+		t.Fatalf("foreign key = %s(%s) -> %s, want region_id -> regions(id)", table, from, to)
+	}
+	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon", Name: "Oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cityModel.Create(ctx, foreignKeySharedPrimaryKeyCity{RegionID: "oregon", Name: "Portland"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cityModel.Create(ctx, foreignKeySharedPrimaryKeyCity{RegionID: "missing", Name: "Unknown"}); err == nil {
+		t.Fatal("Create() accepted a missing shared primary-key belongs_to target")
+	}
+}
+
+// TestModelRejectsInvalidForeignKeyTarget rejects malformed belongs_to targets before migration.
+func TestModelRejectsInvalidForeignKeyTarget(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+
+	assertModelPanics(t, func() { Model[invalidForeignKeyTarget](db) })
 }
 
 // TestAutoMigrateConstraints verifies automatic schema creation and unique-value validation.
