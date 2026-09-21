@@ -439,6 +439,13 @@ func TestModelLifecycle(t *testing.T) {
 	if !reflect.DeepEqual(found.Embedding, inputVector) {
 		t.Fatalf("Find() embedding = %#v, want %#v", found.Embedding, inputVector)
 	}
+	matchingByVector, err := userModel.FindBy(ctx, "embedding", inputVector)
+	if err != nil {
+		t.Fatalf("FindBy() vector error = %v", err)
+	}
+	if len(matchingByVector) != 1 || matchingByVector[0].ID != created.ID {
+		t.Fatalf("FindBy() vector = %#v, want created user", matchingByVector)
+	}
 	if found.CreatedAt.IsZero() || found.UpdatedAt.IsZero() {
 		t.Fatalf("Find() timestamps = %v, %v", found.CreatedAt, found.UpdatedAt)
 	}

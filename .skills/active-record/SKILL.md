@@ -23,6 +23,6 @@ Destructive changes require an explicit operation after the Go model has been up
 
 `Vector32` fields are persisted with Turso's `vector32(?)` function and read with `vector_extract(...)`. The Go value is a `[]float32`-based type; its transport representation is JSON.
 
-`model.Nearest(column, embedding)` orders records by Turso's `vector_distance_cos` in ascending order, so lower distance results are returned first. `Vector32` values supplied to `Where` are JSON-encoded automatically; callers must use them with a `vector32(?)` SQL expression, such as `Where("vector_distance_cos(embedding, vector32(?)) < ?", embedding, 0.2)`.
+`model.Nearest(column, embedding)` orders records by Turso's `vector_distance_cos` in ascending order, so lower distance results are returned first. `Vector32` values supplied to `Where` are JSON-encoded automatically; callers must use them with a `vector32(?)` SQL expression, such as `Where("vector_distance_cos(embedding, vector32(?)) < ?", embedding, 0.2)`. `FindBy(ctx, vectorColumn, embedding)` recognizes mapped `Vector32` columns and adds that conversion automatically for equality predicates.
 
 `OrderBy(expression)` replaces the full previous ordering, including any vector argument installed by `Nearest`.

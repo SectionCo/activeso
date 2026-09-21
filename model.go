@@ -121,12 +121,18 @@ func (model *model[T]) Find(ctx context.Context, id any) (*T, error) {
 func (model *model[T]) FindBy(ctx context.Context, column string, value any) ([]*T, error) {
 	// Initialize Variables
 	field, found := model.fieldForColumn(column)
+	expression := "?"
 
 	if !found {
 		return nil, fmt.Errorf("activeso: column %s is not defined on %s", column, model.tableName)
 	}
 
-	return model.Where(fmt.Sprintf("%s = ?", quoteIdentifier(field.column)), value).All(ctx)
+	// Compare vector BLOBs using Turso's vector32 conversion.
+	if field.isVector {
+		expression = "vector32(?)"
+	}
+
+	return model.Where(fmt.Sprintf("%s = %s", quoteIdentifier(field.column), expression), value).All(ctx)
 }
 
 // All loads and binds every row in the model's table.
