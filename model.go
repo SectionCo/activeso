@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"unicode"
+
+	turso "turso.tech/database/tursogo"
 )
 
 type tableNamer interface {
@@ -84,7 +86,7 @@ func (model *model[T]) Create(ctx context.Context, value T) (*T, error) {
 
 	statement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdentifier(model.tableName), strings.Join(columns, ", "), strings.Join(expressions, ", "))
 	if _, err := model.db.ExecContext(ctx, statement, arguments...); err != nil {
-		return nil, fmt.Errorf("activeso: create %s: %w", model.tableName, err)
+		return nil, fmt.Errorf("activeso: create %s: %w", model.tableName, model.uniqueWriteError(err))
 	}
 
 	return record, nil
@@ -296,7 +298,7 @@ func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	statement := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", quoteIdentifier(model.tableName), strings.Join(assignments, ", "), quoteIdentifier(model.idField.column))
 	result, err := model.db.ExecContext(ctx, statement, append(arguments, originalID)...)
 	if err != nil {
-		return fmt.Errorf("activeso: save %s: %w", model.tableName, err)
+		return fmt.Errorf("activeso: save %s: %w", model.tableName, model.uniqueWriteError(err))
 	}
 
 	rows, err := result.RowsAffected()
@@ -978,6 +980,24 @@ func (model *model[T]) uniqueIndexName(field field) string {
 	name := "activeso_" + table + "_" + column + "_unique"
 
 	return name
+}
+
+// uniqueWriteError translates a Turso unique violation to ActiveSo's public uniqueness errors.
+func (model *model[T]) uniqueWriteError(err error) error {
+	// Initialize Variables
+	message := strings.ToLower(err.Error())
+	uniqueViolation := errors.Is(err, turso.ErrTursoConstraint) && strings.Contains(message, "unique constraint")
+
+	if !uniqueViolation {
+		return err
+	}
+	for _, field := range model.fields {
+		if field.unique && strings.Contains(message, strings.ToLower(field.column)) {
+			return UniqueError{Field: field.column}
+		}
+	}
+
+	return ErrUnique
 }
 
 // validateUnique rejects duplicate values before a write while the database index remains authoritative.

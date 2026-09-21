@@ -465,6 +465,62 @@ func TestAutoMigrateConstraints(t *testing.T) {
 	}
 }
 
+// TestCreateTranslatesAuthoritativeUniqueViolation reports database-enforced races as UniqueError.
+func TestCreateTranslatesAuthoritativeUniqueViolation(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[testUser](db)
+	var err error
+	var uniqueError UniqueError
+
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE TRIGGER force_create_unique BEFORE INSERT ON users WHEN NEW.id <> 'competing' BEGIN INSERT INTO users (id, email) VALUES ('competing', NEW.email); END"); err != nil {
+		t.Fatalf("create unique trigger error = %v", err)
+	}
+
+	_, err = model.Create(ctx, testUser{Email: "race@null.live"})
+	if !errors.Is(err, ErrUnique) {
+		t.Fatalf("Create() error = %v, want ErrUnique", err)
+	}
+	if !errors.As(err, &uniqueError) || uniqueError.Field != "email" {
+		t.Fatalf("Create() unique error = %#v, want email", uniqueError)
+	}
+}
+
+// TestSaveTranslatesAuthoritativeUniqueViolation reports database-enforced races as UniqueError.
+func TestSaveTranslatesAuthoritativeUniqueViolation(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[testUser](db)
+	var record *testUser
+	var err error
+	var uniqueError UniqueError
+
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatalf("AutoMigrate() error = %v", err)
+	}
+	record, err = model.Create(ctx, testUser{Email: "original@null.live"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE TRIGGER force_save_unique BEFORE UPDATE ON users BEGIN INSERT INTO users (id, email) VALUES ('competing', NEW.email); END"); err != nil {
+		t.Fatalf("create unique trigger error = %v", err)
+	}
+
+	record.Email = "race@null.live"
+	err = record.Save(ctx)
+	if !errors.Is(err, ErrUnique) {
+		t.Fatalf("Save() error = %v, want ErrUnique", err)
+	}
+	if !errors.As(err, &uniqueError) || uniqueError.Field != "email" {
+		t.Fatalf("Save() unique error = %#v, want email", uniqueError)
+	}
+}
+
 // TestAutoMigrateEvolvesSafeSchemaChanges verifies nullable additions and rejects unsafe required ones.
 func TestAutoMigrateEvolvesSafeSchemaChanges(t *testing.T) {
 	// Initialize Variables
