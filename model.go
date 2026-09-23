@@ -297,17 +297,17 @@ func (model *model[T]) DropUnique(ctx context.Context, column string) error {
 // DropUniqueWith removes a composite unique index after its unique_with tag has been removed.
 func (model *model[T]) DropUniqueWith(ctx context.Context, columns ...string) error {
 	// Initialize Variables
-	fields, err := model.fieldsForColumns(columns)
+	indexColumns, err := model.uniqueWithColumnsForDrop(columns)
 
 	// Require the model to stop declaring the relationship before removing its protection.
 	if err != nil {
 		return err
 	}
-	if model.declaresUniqueWith(fields) {
+	if model.declaresUniqueWithColumns(indexColumns) {
 		return fmt.Errorf("activeso: remove the unique_with constraint before dropping its index")
 	}
 
-	statement := fmt.Sprintf("DROP INDEX IF EXISTS %s", quoteIdentifier(model.uniqueWithIndexName(fields)))
+	statement := fmt.Sprintf("DROP INDEX IF EXISTS %s", quoteIdentifier(model.uniqueWithIndexNameForColumns(indexColumns)))
 	if _, err := model.db.ExecContext(ctx, statement); err != nil {
 		return fmt.Errorf("activeso: drop composite unique index for %s: %w", model.tableName, err)
 	}
@@ -1558,36 +1558,38 @@ func (model *model[T]) compositeUniqueIndexes() map[string][]field {
 	return indexes
 }
 
-// fieldsForColumns resolves an ordered composite index definition from mapped columns.
-func (model *model[T]) fieldsForColumns(columns []string) ([]field, error) {
+// uniqueWithColumnsForDrop canonicalizes mapped columns and accepts validated model-omitted columns.
+func (model *model[T]) uniqueWithColumnsForDrop(columns []string) ([]string, error) {
 	// Initialize Variables
-	fields := make([]field, 0, len(columns))
+	indexColumns := make([]string, 0, len(columns))
 	seen := make(map[string]struct{}, len(columns))
 
-	// Reject ambiguous, undefined, and single-column composite index requests.
+	// Preserve order while allowing a migration to remove an index whose column was omitted from the model.
 	if len(columns) < 2 {
 		return nil, fmt.Errorf("activeso: DropUniqueWith requires at least two columns")
 	}
 	for _, column := range columns {
-		field, found := model.fieldForColumn(column)
-		if !found {
-			return nil, fmt.Errorf("activeso: column %s is not defined on %s", column, model.tableName)
+		canonicalColumn := column
+		if field, found := model.fieldForColumn(column); found {
+			canonicalColumn = field.column
+		} else if !schemaIdentifier(column) {
+			return nil, fmt.Errorf("activeso: model-omitted column %s must be a simple identifier", column)
 		}
-		key := strings.ToLower(field.column)
+		key := strings.ToLower(canonicalColumn)
 		if _, exists := seen[key]; exists {
 			return nil, fmt.Errorf("activeso: column %s is listed more than once", column)
 		}
 		seen[key] = struct{}{}
-		fields = append(fields, field)
+		indexColumns = append(indexColumns, canonicalColumn)
 	}
 
-	return fields, nil
+	return indexColumns, nil
 }
 
-// declaresUniqueWith reports whether fields are currently protected by a matching unique_with tag.
-func (model *model[T]) declaresUniqueWith(fields []field) bool {
+// declaresUniqueWithColumns reports whether columns are currently protected by a matching unique_with tag.
+func (model *model[T]) declaresUniqueWithColumns(columns []string) bool {
 	// Initialize Variables
-	name := model.uniqueWithIndexName(fields)
+	name := model.uniqueWithIndexNameForColumns(columns)
 	_, declared := model.compositeUniqueIndexes()[name]
 
 	return declared
@@ -1596,15 +1598,28 @@ func (model *model[T]) declaresUniqueWith(fields []field) bool {
 // uniqueWithIndexName returns an unambiguous stable name for an ordered composite unique index.
 func (model *model[T]) uniqueWithIndexName(fields []field) string {
 	// Initialize Variables
-	tableName := strings.ToLower(model.tableName)
 	columns := make([]string, 0, len(fields))
 
-	// Use a separator before hex encoding to avoid collisions between column sequences.
+	// Reuse the column-based name so explicit removals target the same managed index.
 	for _, field := range fields {
-		columns = append(columns, strings.ToLower(field.column))
+		columns = append(columns, field.column)
+	}
+
+	return model.uniqueWithIndexNameForColumns(columns)
+}
+
+// uniqueWithIndexNameForColumns returns an unambiguous stable name for ordered composite index columns.
+func (model *model[T]) uniqueWithIndexNameForColumns(columns []string) string {
+	// Initialize Variables
+	tableName := strings.ToLower(model.tableName)
+	normalizedColumns := make([]string, 0, len(columns))
+
+	// Use a separator before hex encoding to avoid collisions between column sequences.
+	for _, column := range columns {
+		normalizedColumns = append(normalizedColumns, strings.ToLower(column))
 	}
 	table := hex.EncodeToString([]byte(tableName))
-	columnsKey := hex.EncodeToString([]byte(strings.Join(columns, "\x00")))
+	columnsKey := hex.EncodeToString([]byte(strings.Join(normalizedColumns, "\x00")))
 
 	return "activeso_" + table + "_" + columnsKey + "_unique_with"
 }

@@ -60,9 +60,8 @@ type compositeMembershipV1 struct {
 type compositeMembershipV2 struct {
 	Record
 
-	ID             string `db:"id"`
-	CustomerID     string `db:"customer_id" activeso:"not_null"`
-	OrganizationID string `db:"organization_id" activeso:"not_null"`
+	ID         string `db:"id"`
+	CustomerID string `db:"customer_id" activeso:"not_null"`
 }
 
 type invalidForeignKeyTarget struct {

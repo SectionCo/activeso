@@ -179,7 +179,7 @@ type OrganizationCustomer struct {
 
 `AutoMigrate(ctx)` creates a unique index on `(customer_id, organization_id)`, preventing a customer from joining the same organization twice while allowing that customer to join other organizations. Keep the individual `index` tags when `FindBy` queries either column independently.
 
-To remove a `unique_with` constraint, remove the tag first and then run the explicit migration with columns in the same order:
+To remove a `unique_with` constraint, remove the tag first and then run the explicit migration with columns in the same order. The columns may be omitted from the current model, allowing an index to be removed before a later `DropColumn` migration:
 
 ```go
 membershipModel := activeso.Model[OrganizationCustomer](db)
