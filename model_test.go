@@ -35,6 +35,21 @@ type foreignKeyCity struct {
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(id)"`
 }
 
+type foreignKeyCascadeCity struct {
+	Record
+
+	ID       string `db:"id"`
+	Name     string `db:"name"`
+	RegionID string `db:"region_id" activeso:"belongs_to=regions(id),on_delete=cascade"`
+}
+
+type invalidCascadeWithoutForeignKey struct {
+	Record
+
+	ID       string `db:"id"`
+	RegionID string `db:"region_id" activeso:"on_delete=cascade"`
+}
+
 type foreignKeySharedPrimaryKeyCity struct {
 	Record
 
@@ -694,7 +709,7 @@ func TestAutoMigrateForeignKey(t *testing.T) {
 	db := openTestDatabase(t, ctx)
 	regionModel := Model[foreignKeyRegion](db)
 	cityModel := Model[foreignKeyCity](db)
-	var table, from, to string
+	var table, from, to, action string
 
 	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
@@ -706,11 +721,14 @@ func TestAutoMigrateForeignKey(t *testing.T) {
 	if err := cityModel.AutoMigrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT \"table\", \"from\", \"to\" FROM pragma_foreign_key_list('cities')").Scan(&table, &from, &to); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT \"table\", \"from\", \"to\", \"on_delete\" FROM pragma_foreign_key_list('cities')").Scan(&table, &from, &to, &action); err != nil {
 		t.Fatal(err)
 	}
 	if table != "regions" || from != "region_id" || to != "id" {
 		t.Fatalf("foreign key = %s(%s) -> %s, want region_id -> regions(id)", table, from, to)
+	}
+	if action != "NO ACTION" {
+		t.Fatalf("on_delete = %q, want NO ACTION", action)
 	}
 	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon", Name: "Oregon"}); err != nil {
 		t.Fatal(err)
@@ -720,6 +738,50 @@ func TestAutoMigrateForeignKey(t *testing.T) {
 	}
 	if _, err := cityModel.Create(ctx, foreignKeyCity{ID: "unknown", Name: "Unknown", RegionID: "missing"}); err == nil {
 		t.Fatal("Create() accepted a missing belongs_to target")
+	}
+}
+
+// TestAutoMigrateCascadeForeignKey verifies a tagged child is deleted with its parent.
+func TestAutoMigrateCascadeForeignKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	regionModel := Model[foreignKeyRegion](db)
+	cityModel := Model[foreignKeyCascadeCity](db)
+	var action string
+	var childCount int
+
+	// Keep foreign-key enforcement enabled on the connection used for migrations and writes.
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := regionModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cityModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT \"on_delete\" FROM pragma_foreign_key_list(?)", cityModel.tableName).Scan(&action); err != nil {
+		t.Fatal(err)
+	}
+	if action != "CASCADE" {
+		t.Fatalf("on_delete = %q, want CASCADE", action)
+	}
+	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cityModel.Create(ctx, foreignKeyCascadeCity{ID: "portland", RegionID: "oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM regions WHERE id = ?", "oregon"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+quoteIdentifier(cityModel.tableName)).Scan(&childCount); err != nil {
+		t.Fatal(err)
+	}
+	if childCount != 0 {
+		t.Fatalf("child count after parent deletion = %d, want 0", childCount)
 	}
 }
 
@@ -766,6 +828,15 @@ func TestModelRejectsInvalidForeignKeyTarget(t *testing.T) {
 	db := openTestDatabase(t, ctx)
 
 	assertModelPanics(t, func() { Model[invalidForeignKeyTarget](db) })
+}
+
+// TestModelRejectsCascadeWithoutForeignKey requires on_delete to modify a belongs_to tag.
+func TestModelRejectsCascadeWithoutForeignKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+
+	assertModelPanics(t, func() { Model[invalidCascadeWithoutForeignKey](db) })
 }
 
 // TestAutoMigrateConstraints verifies automatic schema creation and unique-value validation.
