@@ -216,7 +216,10 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !field.isID && sqliteTypeAffinity(existingColumn.columnType) != sqliteTypeAffinity(columnType) {
+			if sqliteTypeAffinity(existingColumn.columnType) != sqliteTypeAffinity(columnType) {
+				if field.isID {
+					return fmt.Errorf("activeso: cannot automatically change primary-key type of %s.%s from %s to %s; use a dedicated manual migration", model.tableName, field.column, existingColumn.columnType, columnType)
+				}
 				return fmt.Errorf("activeso: cannot automatically change type of %s.%s from %s to %s; call ChangeColumnType(ctx, %q)", model.tableName, field.column, existingColumn.columnType, columnType, field.column)
 			}
 			if !field.unique && !field.isID {

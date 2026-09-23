@@ -103,6 +103,13 @@ type migrationUserIntegerEmail struct {
 	Email int    `db:"email"`
 }
 
+type migrationUserIntegerID struct {
+	Record
+
+	ID    int    `db:"id"`
+	Email string `db:"email"`
+}
+
 type migrationUserIntegerEmailV2 struct {
 	Record
 
@@ -326,6 +333,14 @@ func (migrationUserV3) TableName() string {
 
 // TableName maps migrationUserIntegerEmail to the shared migration test table.
 func (migrationUserIntegerEmail) TableName() string {
+	// Initialize Variables
+	name := "migration_users"
+
+	return name
+}
+
+// TableName maps migrationUserIntegerID to the shared migration test table.
+func (migrationUserIntegerID) TableName() string {
 	// Initialize Variables
 	name := "migration_users"
 
@@ -930,11 +945,14 @@ func TestAutoMigrateHintsExplicitMigrations(t *testing.T) {
 	ctx := context.Background()
 	notNullDB := openTestDatabase(t, ctx)
 	typeDB := openTestDatabase(t, ctx)
+	primaryKeyDB := openTestDatabase(t, ctx)
 	uniqueDB := openTestDatabase(t, ctx)
 	versionOne := Model[migrationUserV1](notNullDB)
 	versionThree := Model[migrationUserV3](notNullDB)
 	typeVersionOne := Model[migrationUserV1](typeDB)
 	integerEmail := Model[migrationUserIntegerEmail](typeDB)
+	primaryKeyVersionOne := Model[migrationUserV1](primaryKeyDB)
+	integerID := Model[migrationUserIntegerID](primaryKeyDB)
 	uniqueVersionOne := Model[caseUniqueUserV1](uniqueDB)
 	uniqueRemoval := Model[caseUniqueUserV3](uniqueDB)
 	var err error
@@ -955,6 +973,15 @@ func TestAutoMigrateHintsExplicitMigrations(t *testing.T) {
 	err = integerEmail.AutoMigrate(ctx)
 	if err == nil || !strings.Contains(err.Error(), `ChangeColumnType(ctx, "email")`) {
 		t.Fatalf("type AutoMigrate() error = %v, want ChangeColumnType hint", err)
+	}
+
+	// Primary-key affinity changes require a dedicated manual migration.
+	if err := primaryKeyVersionOne.AutoMigrate(ctx); err != nil {
+		t.Fatalf("primary-key v1 AutoMigrate() error = %v", err)
+	}
+	err = integerID.AutoMigrate(ctx)
+	if err == nil || !strings.Contains(err.Error(), "dedicated manual migration") {
+		t.Fatalf("primary-key AutoMigrate() error = %v, want manual migration hint", err)
 	}
 
 	// Removing ActiveSo's managed unique index also requires an explicit operation.

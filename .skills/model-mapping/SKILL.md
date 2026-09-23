@@ -4,7 +4,7 @@
 
 - A model embeds `activeso.Record` and has exactly one primary key.
 - `activeso:"primary_key"` explicitly selects a primary-key field. Without that tag, the field mapped to `id` is the primary key.
-- `AutoMigrate` rejects an existing table unless the modeled primary-key column is protected by a sole primary key or a single-column unique index. Composite primary keys do not uniquely identify one modeled ID.
+- `AutoMigrate` rejects an existing table unless the modeled primary-key column is protected by a sole primary key or a single-column unique index. Composite primary keys do not uniquely identify one modeled ID. It also rejects a modeled primary-key storage-affinity change; primary-key rebuilds require a dedicated manual migration.
 - Primary keys must be immutable scalar Go types: strings, booleans, signed integers, `uint8`/`uint16`/`uint32`, and floats. `uint` and `uint64` are rejected during model construction because their full range exceeds Turso's signed 64-bit INTEGER representation; mutable values such as `[]byte` are also rejected.
 
 ## Foreign keys
