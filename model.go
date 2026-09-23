@@ -27,6 +27,7 @@ type field struct {
 	goType          reflect.Type
 	belongsToTable  string
 	belongsToColumn string
+	onDeleteCascade bool
 	isID            bool
 	isVector        bool
 	notNull         bool
@@ -628,7 +629,7 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 		if column == "" {
 			continue
 		}
-		notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, err := fieldConstraints(structField)
+		notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, onDeleteCascade, err := fieldConstraints(structField)
 		if err != nil {
 			return nil, err
 		}
@@ -638,7 +639,7 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 		}
 		columns[normalizedColumn] = struct{}{}
 
-		field := field{index: index, column: column, goType: structField.Type, belongsToTable: belongsToTable, belongsToColumn: belongsToColumn, isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique, uniqueWith: uniqueWith, indexed: indexed, primaryKey: primaryKey}
+		field := field{index: index, column: column, goType: structField.Type, belongsToTable: belongsToTable, belongsToColumn: belongsToColumn, onDeleteCascade: onDeleteCascade, isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique, uniqueWith: uniqueWith, indexed: indexed, primaryKey: primaryKey}
 		fields = append(fields, field)
 		if primaryKey {
 			explicitPrimaryKeyCount++
@@ -744,7 +745,7 @@ func columnName(structField reflect.StructField) string {
 }
 
 // fieldConstraints parses supported ActiveSo schema constraints from a struct field.
-func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bool, bool, string, string, error) {
+func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bool, bool, string, string, bool, error) {
 	// Initialize Variables
 	tag := structField.Tag.Get("activeso")
 	constraints := strings.Split(tag, ",")
@@ -755,6 +756,8 @@ func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bo
 	primaryKey := false
 	belongsToTable := ""
 	belongsToColumn := ""
+	onDeleteCascade := false
+	onDeleteSeen := false
 
 	for _, constraint := range constraints {
 		switch constraint {
@@ -768,37 +771,46 @@ func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bo
 			indexed = true
 		case "primary_key":
 			primaryKey = true
+		case "on_delete=cascade":
+			if onDeleteSeen {
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate on_delete constraint on field %s", structField.Name)
+			}
+			onDeleteCascade = true
+			onDeleteSeen = true
 		default:
 			if strings.HasPrefix(constraint, "unique_with=") {
 				if uniqueWith != nil {
-					return false, false, nil, false, false, "", "", fmt.Errorf("activeso: duplicate unique_with constraint on field %s", structField.Name)
+					return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate unique_with constraint on field %s", structField.Name)
 				}
 				columns, err := uniqueWithColumns(strings.TrimPrefix(constraint, "unique_with="))
 				if err != nil {
-					return false, false, nil, false, false, "", "", fmt.Errorf("activeso: invalid unique_with constraint on field %s: %w", structField.Name, err)
+					return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: invalid unique_with constraint on field %s: %w", structField.Name, err)
 				}
 				uniqueWith = columns
 				continue
 			}
 			if !strings.HasPrefix(constraint, "belongs_to=") {
-				return false, false, nil, false, false, "", "", fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
 			}
 			if belongsToTable != "" {
-				return false, false, nil, false, false, "", "", fmt.Errorf("activeso: duplicate belongs_to constraint on field %s", structField.Name)
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate belongs_to constraint on field %s", structField.Name)
 			}
 
 			var err error
 			belongsToTable, belongsToColumn, err = belongsToTarget(strings.TrimPrefix(constraint, "belongs_to="))
 			if err != nil {
-				return false, false, nil, false, false, "", "", fmt.Errorf("activeso: invalid belongs_to constraint on field %s: %w", structField.Name, err)
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: invalid belongs_to constraint on field %s: %w", structField.Name, err)
 			}
 		}
 	}
 	if unique && uniqueWith != nil {
-		return false, false, nil, false, false, "", "", fmt.Errorf("activeso: field %s cannot combine unique and unique_with", structField.Name)
+		return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: field %s cannot combine unique and unique_with", structField.Name)
+	}
+	if onDeleteCascade && belongsToTable == "" {
+		return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: on_delete requires belongs_to on field %s", structField.Name)
 	}
 
-	return notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, nil
+	return notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, onDeleteCascade, nil
 }
 
 // uniqueWithColumns validates the ordered columns used by a composite unique index.
@@ -1321,6 +1333,9 @@ func (model *model[T]) columnDefinition(field field, includeRequired bool) (stri
 	}
 	if field.belongsToTable != "" {
 		definition += " REFERENCES " + quoteIdentifier(field.belongsToTable) + "(" + quoteIdentifier(field.belongsToColumn) + ")"
+		if field.onDeleteCascade {
+			definition += " ON DELETE CASCADE"
+		}
 	}
 
 	return definition, nil

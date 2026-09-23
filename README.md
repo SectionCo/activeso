@@ -154,6 +154,7 @@ type City struct {
 | `index` | Creates a stable, unambiguous non-unique index for the table and column. | Makes equality lookups such as `FindBy` eligible to use a Turso index. |
 | `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use a supported immutable scalar type. |
 | `belongs_to=table(column)` | Adds `REFERENCES table(column)` when creating a table or adding a missing nullable column. It does not attach a foreign key to an existing column. | Turso rejects non-`NULL` values that do not exist in the referenced column when foreign-key enforcement is enabled. |
+| `on_delete=cascade` | Adds `ON DELETE CASCADE` to a `belongs_to` foreign key created on the same field. Requires `belongs_to`; it does not change an existing foreign key. | Deleting the referenced row also deletes matching rows in this table when foreign-key enforcement is enabled. |
 
 If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. Supported primary-key types are strings, booleans, signed integers, `uint8`, `uint16`, `uint32`, and floats. `uint` and `uint64` are rejected because their full range cannot be represented by Turso's signed 64-bit `INTEGER`.
 
@@ -164,6 +165,14 @@ If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly o
 ```go
 RegionID string `db:"region_id" activeso:"not_null,belongs_to=regions(id)"`
 ```
+
+To delete child rows when their referenced row is deleted, add `on_delete=cascade` on the same field:
+
+```go
+RegionID string `db:"region_id" activeso:"belongs_to=regions(id),on_delete=cascade"`
+```
+
+Changing the tag on an existing foreign key does not alter its database constraint; that requires a dedicated schema migration.
 
 Use `unique_with` when a combination of fields, rather than one field alone, must be unique. The tagged field is the first index column and named columns follow it in the listed order:
 
