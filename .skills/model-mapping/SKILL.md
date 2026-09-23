@@ -22,4 +22,6 @@
 ## Indexes
 
 - `activeso:"index"` creates a non-unique single-column index during `AutoMigrate`; `FindBy(ctx, column, value)` safely queries any mapped column and returns all matches.
-- ActiveSo-generated ordinary and unique index names lowercase then hex-encode table and column names, making SQLite-global index names unambiguous and stable across case-only mapping changes. Unique index names end in `_unique`; ordinary index names end in `_index`.
+- ActiveSo-generated ordinary and unique index names lowercase then he- `activeso:"index"` creates a non-unique single-column index during `AutoMigrate`; `FindBy(ctx, column, value)` safely queries any mapped column and returns all matches.
+- `activeso:"unique_with=column[+column...]"` creates an ordered composite unique index beginning with the tagged field. Each referenced column must be mapped, distinct, and different from the tagged field. `AutoMigrate` creates these indexes, but requires `DropUniqueWith(ctx, columns...)` after the tag is removed rather than dropping them implicitly.
+- ActiveSo-generated ordinary and unique index names lowercase then hex-encode table and column names, making SQLite-global index names unambiguous and stable across case-only mapping changes. Managed-index lookup also compares SQLite table names case-insensitively. Single-column unique index names end in `_unique`, composite unique index names end in `_unique_with`, and ordinary index names end in `_index`.

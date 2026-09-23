@@ -49,6 +49,22 @@ type indexedCity struct {
 	Name string `db:"name" activeso:"not_null,index"`
 }
 
+type compositeMembershipV1 struct {
+	Record
+
+	ID             string `db:"id"`
+	CustomerID     string `db:"customer_id" activeso:"not_null,unique_with=organization_id"`
+	OrganizationID string `db:"organization_id" activeso:"not_null"`
+}
+
+type compositeMembershipV2 struct {
+	Record
+
+	ID             string `db:"id"`
+	CustomerID     string `db:"customer_id" activeso:"not_null"`
+	OrganizationID string `db:"organization_id" activeso:"not_null"`
+}
+
 type invalidForeignKeyTarget struct {
 	Record
 
@@ -264,6 +280,22 @@ func (foreignKeyCity) TableName() string {
 func (indexedCity) TableName() string {
 	// Initialize Variables
 	name := "indexed_cities"
+
+	return name
+}
+
+// TableName maps compositeMembershipV1 to the shared membership test table.
+func (compositeMembershipV1) TableName() string {
+	// Initialize Variables
+	name := "composite_memberships"
+
+	return name
+}
+
+// TableName maps compositeMembershipV2 to the shared membership test table.
+func (compositeMembershipV2) TableName() string {
+	// Initialize Variables
+	name := "composite_memberships"
 
 	return name
 }
@@ -565,6 +597,57 @@ func TestAutoMigrateIndexAndFindBy(t *testing.T) {
 	}
 	if _, err := model.FindBy(ctx, "missing", "Portland"); err == nil {
 		t.Fatal("FindBy() accepted an undefined column")
+	}
+}
+
+// TestCompositeUniqueWith creates, enforces, and explicitly removes composite unique indexes.
+func TestCompositeUniqueWith(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t, ctx)
+	model := Model[compositeMembershipV1](db)
+	removedModel := Model[compositeMembershipV2](db)
+	fields := []field{model.fields[1], model.fields[2]}
+	indexName := model.uniqueWithIndexName(fields)
+	var indexCount int
+
+	if err := model.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("composite unique index count = %d, want 1", indexCount)
+	}
+	if _, err := model.Create(ctx, compositeMembershipV1{ID: "one", CustomerID: "customer-a", OrganizationID: "organization-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Create(ctx, compositeMembershipV1{ID: "two", CustomerID: "customer-a", OrganizationID: "organization-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Create(ctx, compositeMembershipV1{ID: "three", CustomerID: "customer-b", OrganizationID: "organization-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.Create(ctx, compositeMembershipV1{ID: "four", CustomerID: "customer-a", OrganizationID: "organization-a"}); !errors.Is(err, ErrUnique) {
+		t.Fatalf("duplicate composite membership error = %v, want ErrUnique", err)
+	}
+
+	// Removing the tag requires an explicit index migration before AutoMigrate can proceed.
+	if err := removedModel.AutoMigrate(ctx); err == nil || !strings.Contains(err.Error(), "DropUniqueWith") {
+		t.Fatalf("AutoMigrate() after unique_with removal error = %v, want DropUniqueWith guidance", err)
+	}
+	if err := removedModel.DropUniqueWith(ctx, "customer_id", "organization_id"); err != nil {
+		t.Fatal(err)
+	}
+	if err := removedModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 0 {
+		t.Fatalf("composite unique index count after removal = %d, want 0", indexCount)
 	}
 }
 
