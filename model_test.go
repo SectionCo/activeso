@@ -470,7 +470,7 @@ func (caseUniqueUserV2) TableName() string {
 // TableName maps the unique-index removal spelling to its temporary users table.
 func (caseUniqueUserV3) TableName() string {
 	// Initialize Variables
-	name := "case_unique_users"
+	name := "CASE_UNIQUE_USERS"
 
 	return name
 }
@@ -1430,6 +1430,9 @@ func TestUniqueIndexNamesIgnoreIdentifierCase(t *testing.T) {
 	}
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexes); err != nil || indexes != 1 {
 		t.Fatalf("unique index count = %d, error = %v, want 1", indexes, err)
+	}
+	if err := removal.AutoMigrate(ctx); err == nil || !strings.Contains(err.Error(), `DropUnique(ctx, "EMAIL")`) {
+		t.Fatalf("AutoMigrate() after case-only table-name change error = %v, want DropUnique hint", err)
 	}
 	if err := removal.DropUnique(ctx, "EMAIL"); err != nil {
 		t.Fatalf("DropUnique() error = %v", err)

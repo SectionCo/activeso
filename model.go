@@ -1382,7 +1382,7 @@ func sqliteTypeAffinity(columnType string) string {
 // managedUniqueIndexExists reports whether ActiveSo's unique index still exists for field.
 func (model *model[T]) managedUniqueIndexExists(ctx context.Context, transaction *sql.Tx, field field) (bool, error) {
 	// Initialize Variables
-	statement := "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ? AND tbl_name = ? LIMIT 1"
+	statement := "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ? AND LOWER(tbl_name) = LOWER(?) LIMIT 1"
 	value := 0
 
 	// Only identify indexes with ActiveSo's deterministic name, never user-managed uniqueness.
