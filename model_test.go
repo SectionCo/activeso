@@ -941,17 +941,29 @@ func TestExplicitMigrations(t *testing.T) {
 	}
 }
 
-// TestDefaultIdentifierNames verifies default table names preserve initialism word boundaries.
+// TestDefaultIdentifierNames verifies default table names use English plurals without double-pluralizing names.
 func TestDefaultIdentifierNames(t *testing.T) {
 	// Initialize Variables
 	apiKey := snakeCase("APIKey")
 	blogPost := pluralize(snakeCase("BlogPost"))
+	city := pluralize(snakeCase("City"))
+	person := pluralize(snakeCase("Person"))
+	users := pluralize(snakeCase("Users"))
 
 	if apiKey != "api_key" {
 		t.Fatalf("snakeCase(APIKey) = %q, want api_key", apiKey)
 	}
 	if blogPost != "blog_posts" {
 		t.Fatalf("default BlogPost table = %q, want blog_posts", blogPost)
+	}
+	if city != "cities" {
+		t.Fatalf("default City table = %q, want cities", city)
+	}
+	if person != "people" {
+		t.Fatalf("default Person table = %q, want people", person)
+	}
+	if users != "users" {
+		t.Fatalf("default Users table = %q, want users", users)
 	}
 }
 

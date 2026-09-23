@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gobuffalo/flect"
 	turso "turso.tech/database/tursogo"
 )
 
@@ -813,19 +814,12 @@ func snakeCase(value string) string {
 	return builder.String()
 }
 
-// pluralize converts the common singular table identifier forms used by Model defaults.
+// pluralize converts a table identifier to its English plural without duplicating plural names.
 func pluralize(value string) string {
 	// Initialize Variables
-	last := value[len(value)-1:]
+	plural := flect.Pluralize(value)
 
-	if strings.HasSuffix(value, "ch") || strings.HasSuffix(value, "sh") || strings.ContainsAny(last, "sxz") {
-		return value + "es"
-	}
-	if strings.HasSuffix(value, "y") && len(value) > 1 && !strings.ContainsAny(value[len(value)-2:len(value)-1], "aeiou") {
-		return value[:len(value)-1] + "ies"
-	}
-
-	return value + "s"
+	return plural
 }
 
 // quoteIdentifier quotes a trusted schema identifier for use in generated SQL.

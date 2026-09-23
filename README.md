@@ -71,9 +71,21 @@ func example(ctx context.Context) error {
 }
 ```
 
-`Model` uses plural snake_case table names by default (`User` maps to `users`). 
+`Model` uses plural snake_case table names by default. English inflection handles common and irregular forms (`User` → `users`, `City` → `cities`, `Person` → `people`) and does not double-pluralize a type already named `Users`.
 
-Implement `TableName() string` on a model for an explicit table name. 
+Implement `TableName() string` whenever your database uses a specific or domain-specific table name. For example:
+
+```go
+type Customer struct {
+	activeso.Record
+
+	ID string `db:"id"`
+}
+
+func (Customer) TableName() string {
+	return "crm_customers"
+}
+```
 
 Run `AutoMigrate(ctx)` separately during application setup or deployment when you want ActiveSo to create the table, add missing nullable columns, and create tagged unique indexes; it is not required for normal model initialization or record operations.
 

@@ -2,7 +2,10 @@ module github.com/sectionco/activeso
 
 go 1.24.0
 
-require turso.tech/database/tursogo v0.7.2
+require (
+	github.com/gobuffalo/flect v1.0.3
+	turso.tech/database/tursogo v0.7.2
+)
 
 require (
 	github.com/ebitengine/purego v0.9.1 // indirect
