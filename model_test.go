@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	_ "turso.tech/database/tursogo"
@@ -84,6 +85,14 @@ type migrationUserIntegerEmail struct {
 
 	ID    string `db:"id"`
 	Email int    `db:"email"`
+}
+
+type migrationUserIntegerEmailV2 struct {
+	Record
+
+	ID       string `db:"id"`
+	Email    int    `db:"email"`
+	Nickname string `db:"nickname"`
 }
 
 type migrationUserMovedID struct {
@@ -285,6 +294,14 @@ func (migrationUserV3) TableName() string {
 
 // TableName maps migrationUserIntegerEmail to the shared migration test table.
 func (migrationUserIntegerEmail) TableName() string {
+	// Initialize Variables
+	name := "migration_users"
+
+	return name
+}
+
+// TableName maps migrationUserIntegerEmailV2 to the shared migration test table.
+func (migrationUserIntegerEmailV2) TableName() string {
 	// Initialize Variables
 	name := "migration_users"
 
@@ -824,6 +841,49 @@ func TestAutoMigrateEvolvesSafeSchemaChanges(t *testing.T) {
 	}
 }
 
+// TestAutoMigrateHintsExplicitMigrations directs destructive schema changes to the matching API.
+func TestAutoMigrateHintsExplicitMigrations(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	notNullDB := openTestDatabase(t, ctx)
+	typeDB := openTestDatabase(t, ctx)
+	uniqueDB := openTestDatabase(t, ctx)
+	versionOne := Model[migrationUserV1](notNullDB)
+	versionThree := Model[migrationUserV3](notNullDB)
+	typeVersionOne := Model[migrationUserV1](typeDB)
+	integerEmail := Model[migrationUserIntegerEmail](typeDB)
+	uniqueVersionOne := Model[caseUniqueUserV1](uniqueDB)
+	uniqueRemoval := Model[caseUniqueUserV3](uniqueDB)
+	var err error
+
+	// Adding a required column requires a nullable addition and a backfill first.
+	if err := versionOne.AutoMigrate(ctx); err != nil {
+		t.Fatalf("not-null v1 AutoMigrate() error = %v", err)
+	}
+	err = versionThree.AutoMigrate(ctx)
+	if err == nil || !strings.Contains(err.Error(), `SetNotNull(ctx, "required")`) {
+		t.Fatalf("not-null AutoMigrate() error = %v, want SetNotNull hint", err)
+	}
+
+	// Changing an existing column's storage type requires an explicit rebuild.
+	if err := typeVersionOne.AutoMigrate(ctx); err != nil {
+		t.Fatalf("type v1 AutoMigrate() error = %v", err)
+	}
+	err = integerEmail.AutoMigrate(ctx)
+	if err == nil || !strings.Contains(err.Error(), `ChangeColumnType(ctx, "email")`) {
+		t.Fatalf("type AutoMigrate() error = %v, want ChangeColumnType hint", err)
+	}
+
+	// Removing ActiveSo's managed unique index also requires an explicit operation.
+	if err := uniqueVersionOne.AutoMigrate(ctx); err != nil {
+		t.Fatalf("unique v1 AutoMigrate() error = %v", err)
+	}
+	err = uniqueRemoval.AutoMigrate(ctx)
+	if err == nil || !strings.Contains(err.Error(), `DropUnique(ctx, "EMAIL")`) {
+		t.Fatalf("unique AutoMigrate() error = %v, want DropUnique hint", err)
+	}
+}
+
 // TestExplicitMigrations verifies destructive schema changes require explicit model operations.
 func TestExplicitMigrations(t *testing.T) {
 	// Initialize Variables
@@ -831,7 +891,7 @@ func TestExplicitMigrations(t *testing.T) {
 	db := openTestDatabase(t, ctx)
 	versionOne := Model[migrationUserV1](db)
 	integerEmail := Model[migrationUserIntegerEmail](db)
-	versionTwo := Model[migrationUserV2](db)
+	versionTwo := Model[migrationUserIntegerEmailV2](db)
 	requiredNickname := Model[migrationUserRequiredNickname](db)
 	var columnType string
 
@@ -854,8 +914,8 @@ func TestExplicitMigrations(t *testing.T) {
 	if err := versionTwo.AutoMigrate(ctx); err != nil {
 		t.Fatalf("v2 AutoMigrate() error = %v", err)
 	}
-	if err := requiredNickname.SetNotNull(ctx, "nickname"); err == nil {
-		t.Fatal("SetNotNull() succeeded while nickname contains NULL")
+	if err := requiredNickname.SetNotNull(ctx, "nickname"); err == nil || !strings.Contains(err.Error(), `SetNotNull(ctx, "nickname")`) {
+		t.Fatalf("SetNotNull() error = %v, want backfill and retry hint", err)
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE migration_users SET nickname = ?", "Migrate"); err != nil {
 		t.Fatalf("fill nickname: %v", err)

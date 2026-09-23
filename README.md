@@ -210,7 +210,7 @@ if err := userModel.AutoMigrate(ctx); err != nil {
 
 ### Explicit migrations
 
-`AutoMigrate(ctx)` is intentionally additive and safe: it never drops data, removes indexes, changes column types, or tightens existing constraints. Make destructive schema changes deliberately by first updating the model definition, then calling the matching operation during deployment.
+`AutoMigrate(ctx)` is intentionally additive and safe: it never drops data, removes indexes, changes column types, or tightens existing constraints. When it detects a destructive change it can identify safely, its error directs you to the matching explicit API: a new `not_null` field requires a nullable addition, a backfill, and `SetNotNull(ctx, column)`; a changed storage type requires `ChangeColumnType(ctx, column)`; and removing `unique` requires `DropUnique(ctx, column)` when ActiveSo's managed index exists. Make destructive schema changes deliberately by first updating the model definition, then calling the matching operation during deployment. Removing a model field is not treated as a drop request because ActiveSo intentionally supports database columns that are omitted from the Go struct; call `DropColumn(ctx, column)` explicitly.
 
 | Operation | Required model change | Effect |
 | --- | --- | --- |

@@ -40,6 +40,7 @@ const (
 )
 
 type columnInfo struct {
+	columnType string
 	primaryKey bool
 	unique     bool
 }
@@ -206,11 +207,29 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 		return fmt.Errorf("activeso: existing table %s must define a primary key or unique constraint on %s", model.tableName, model.idField.column)
 	}
 	for _, field := range model.fields {
-		if _, found := columns[strings.ToLower(field.column)]; found {
+		existingColumn, found := columns[strings.ToLower(field.column)]
+		if found {
+			// Detect changes that require the caller to opt into a destructive migration.
+			columnType, err := sqlColumnType(field)
+			if err != nil {
+				return err
+			}
+			if !field.isID && sqliteTypeAffinity(existingColumn.columnType) != sqliteTypeAffinity(columnType) {
+				return fmt.Errorf("activeso: cannot automatically change type of %s.%s from %s to %s; call ChangeColumnType(ctx, %q)", model.tableName, field.column, existingColumn.columnType, columnType, field.column)
+			}
+			if !field.unique && !field.isID {
+				exists, err := model.managedUniqueIndexExists(ctx, transaction, field)
+				if err != nil {
+					return err
+				}
+				if exists {
+					return fmt.Errorf("activeso: cannot automatically remove the unique index for %s.%s; call DropUnique(ctx, %q)", model.tableName, field.column, field.column)
+				}
+			}
 			continue
 		}
 		if field.notNull {
-			return fmt.Errorf("activeso: cannot automatically add required column %s to %s", field.column, model.tableName)
+			return fmt.Errorf("activeso: cannot automatically add required column %s to %s; add it as nullable, backfill its values, then call SetNotNull(ctx, %q)", field.column, model.tableName, field.column)
 		}
 
 		definition, err := model.columnDefinition(field, false)
@@ -307,7 +326,7 @@ func (model *model[T]) SetNotNull(ctx context.Context, column string) error {
 		return fmt.Errorf("activeso: add the not_null constraint to %s before tightening it", column)
 	}
 	if err := model.db.QueryRowContext(ctx, statement).Scan(&nullValue); err == nil {
-		return fmt.Errorf("activeso: cannot set %s.%s to NOT NULL while NULL values exist", model.tableName, column)
+		return fmt.Errorf("activeso: cannot set %s.%s to NOT NULL while NULL values exist; backfill them, then retry SetNotNull(ctx, %q)", model.tableName, column, column)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("activeso: check NULL values for %s.%s: %w", model.tableName, column, err)
 	}
@@ -1164,6 +1183,43 @@ func sqlColumnType(field field) (string, error) {
 	return "", fmt.Errorf("activeso: cannot infer a SQL type for %s", field.goType)
 }
 
+// sqliteTypeAffinity returns SQLite's comparison affinity for a declared column type.
+func sqliteTypeAffinity(columnType string) string {
+	// Initialize Variables
+	normalized := strings.ToUpper(strings.TrimSpace(columnType))
+
+	// Treat SQLite type synonyms as equivalent so legacy schemas remain compatible.
+	switch {
+	case strings.Contains(normalized, "INT"):
+		return "INTEGER"
+	case strings.Contains(normalized, "CHAR"), strings.Contains(normalized, "CLOB"), strings.Contains(normalized, "TEXT"):
+		return "TEXT"
+	case strings.Contains(normalized, "BLOB") || normalized == "":
+		return "BLOB"
+	case strings.Contains(normalized, "REAL"), strings.Contains(normalized, "FLOA"), strings.Contains(normalized, "DOUB"):
+		return "REAL"
+	default:
+		return "NUMERIC"
+	}
+}
+
+// managedUniqueIndexExists reports whether ActiveSo's unique index still exists for field.
+func (model *model[T]) managedUniqueIndexExists(ctx context.Context, transaction *sql.Tx, field field) (bool, error) {
+	// Initialize Variables
+	statement := "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ? AND tbl_name = ? LIMIT 1"
+	value := 0
+
+	// Only identify indexes with ActiveSo's deterministic name, never user-managed uniqueness.
+	if err := transaction.QueryRowContext(ctx, statement, model.uniqueIndexName(field), model.tableName).Scan(&value); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("activeso: inspect managed unique index for %s.%s: %w", model.tableName, field.column, err)
+	}
+
+	return true, nil
+}
+
 // existingColumns returns each column's identity metadata from the model's existing table.
 func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx) (map[string]columnInfo, error) {
 	// Initialize Variables
@@ -1191,7 +1247,7 @@ func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx)
 		if primaryKey {
 			primaryKeyColumns++
 		}
-		columns[strings.ToLower(name)] = columnInfo{primaryKey: primaryKey}
+		columns[strings.ToLower(name)] = columnInfo{columnType: columnType, primaryKey: primaryKey}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("activeso: iterate columns for %s: %w", model.tableName, err)
