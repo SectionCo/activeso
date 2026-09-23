@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gobuffalo/flect"
 	turso "turso.tech/database/tursogo"
 )
 
@@ -30,6 +31,7 @@ type field struct {
 	isVector        bool
 	notNull         bool
 	unique          bool
+	uniqueWith      []string
 	indexed         bool
 	primaryKey      bool
 }
@@ -40,6 +42,8 @@ const (
 )
 
 type columnInfo struct {
+	columnType string
+	notNull    bool
 	primaryKey bool
 	unique     bool
 }
@@ -206,11 +210,35 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 		return fmt.Errorf("activeso: existing table %s must define a primary key or unique constraint on %s", model.tableName, model.idField.column)
 	}
 	for _, field := range model.fields {
-		if _, found := columns[strings.ToLower(field.column)]; found {
+		existingColumn, found := columns[strings.ToLower(field.column)]
+		if found {
+			// Detect changes that require the caller to opt into a destructive migration.
+			columnType, err := sqlColumnType(field)
+			if err != nil {
+				return err
+			}
+			if sqliteTypeAffinity(existingColumn.columnType) != sqliteTypeAffinity(columnType) {
+				if field.isID {
+					return fmt.Errorf("activeso: cannot automatically change primary-key type of %s.%s from %s to %s; use a dedicated manual migration", model.tableName, field.column, existingColumn.columnType, columnType)
+				}
+				return fmt.Errorf("activeso: cannot automatically change type of %s.%s from %s to %s; call ChangeColumnType(ctx, %q)", model.tableName, field.column, existingColumn.columnType, columnType, field.column)
+			}
+			if field.notNull && !existingColumn.notNull && !field.isID {
+				return fmt.Errorf("activeso: cannot automatically add the not_null constraint to %s.%s; backfill NULL values, then call SetNotNull(ctx, %q)", model.tableName, field.column, field.column)
+			}
+			if !field.unique && !field.isID {
+				exists, err := model.managedUniqueIndexExists(ctx, transaction, field)
+				if err != nil {
+					return err
+				}
+				if exists {
+					return fmt.Errorf("activeso: cannot automatically remove the unique index for %s.%s; call DropUnique(ctx, %q)", model.tableName, field.column, field.column)
+				}
+			}
 			continue
 		}
 		if field.notNull {
-			return fmt.Errorf("activeso: cannot automatically add required column %s to %s", field.column, model.tableName)
+			return fmt.Errorf("activeso: cannot automatically add required column %s to %s; add it as nullable, backfill its values, then call SetNotNull(ctx, %q)", field.column, model.tableName, field.column)
 		}
 
 		definition, err := model.columnDefinition(field, false)
@@ -224,6 +252,9 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 	}
 
 	if err := model.createTimestampColumns(ctx, transaction, columns); err != nil {
+		return err
+	}
+	if err := model.ensureCompositeUniqueIndexesDeclared(ctx, transaction); err != nil {
 		return err
 	}
 	if err := model.createUniqueIndexes(ctx, transaction); err != nil {
@@ -258,6 +289,27 @@ func (model *model[T]) DropUnique(ctx context.Context, column string) error {
 	statement := fmt.Sprintf("DROP INDEX IF EXISTS %s", quoteIdentifier(model.uniqueIndexName(field)))
 	if _, err := model.db.ExecContext(ctx, statement); err != nil {
 		return fmt.Errorf("activeso: drop unique index for %s.%s: %w", model.tableName, column, err)
+	}
+
+	return nil
+}
+
+// DropUniqueWith removes a composite unique index after its unique_with tag has been removed.
+func (model *model[T]) DropUniqueWith(ctx context.Context, columns ...string) error {
+	// Initialize Variables
+	indexColumns, err := model.uniqueWithColumnsForDrop(columns)
+
+	// Require the model to stop declaring the relationship before removing its protection.
+	if err != nil {
+		return err
+	}
+	if model.declaresUniqueWithColumns(indexColumns) {
+		return fmt.Errorf("activeso: remove the unique_with constraint before dropping its index")
+	}
+
+	statement := fmt.Sprintf("DROP INDEX IF EXISTS %s", quoteIdentifier(model.uniqueWithIndexNameForColumns(indexColumns)))
+	if _, err := model.db.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("activeso: drop composite unique index for %s: %w", model.tableName, err)
 	}
 
 	return nil
@@ -307,7 +359,7 @@ func (model *model[T]) SetNotNull(ctx context.Context, column string) error {
 		return fmt.Errorf("activeso: add the not_null constraint to %s before tightening it", column)
 	}
 	if err := model.db.QueryRowContext(ctx, statement).Scan(&nullValue); err == nil {
-		return fmt.Errorf("activeso: cannot set %s.%s to NOT NULL while NULL values exist", model.tableName, column)
+		return fmt.Errorf("activeso: cannot set %s.%s to NOT NULL while NULL values exist; backfill them, then retry SetNotNull(ctx, %q)", model.tableName, column, column)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("activeso: check NULL values for %s.%s: %w", model.tableName, column, err)
 	}
@@ -576,7 +628,7 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 		if column == "" {
 			continue
 		}
-		notNull, unique, indexed, primaryKey, belongsToTable, belongsToColumn, err := fieldConstraints(structField)
+		notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, err := fieldConstraints(structField)
 		if err != nil {
 			return nil, err
 		}
@@ -586,7 +638,7 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 		}
 		columns[normalizedColumn] = struct{}{}
 
-		field := field{index: index, column: column, goType: structField.Type, belongsToTable: belongsToTable, belongsToColumn: belongsToColumn, isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique, indexed: indexed, primaryKey: primaryKey}
+		field := field{index: index, column: column, goType: structField.Type, belongsToTable: belongsToTable, belongsToColumn: belongsToColumn, isVector: structField.Type == reflect.TypeFor[Vector32](), notNull: notNull, unique: unique, uniqueWith: uniqueWith, indexed: indexed, primaryKey: primaryKey}
 		fields = append(fields, field)
 		if primaryKey {
 			explicitPrimaryKeyCount++
@@ -613,6 +665,9 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	}
 	if model.idField.goType == nil {
 		return nil, fmt.Errorf("activeso: model type %s must expose an id column or primary_key field", typeOfT)
+	}
+	if err := validateUniqueWith(fields); err != nil {
+		return nil, err
 	}
 
 	model.tableName = tableName[T](typeOfT)
@@ -689,12 +744,13 @@ func columnName(structField reflect.StructField) string {
 }
 
 // fieldConstraints parses supported ActiveSo schema constraints from a struct field.
-func fieldConstraints(structField reflect.StructField) (bool, bool, bool, bool, string, string, error) {
+func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bool, bool, string, string, error) {
 	// Initialize Variables
 	tag := structField.Tag.Get("activeso")
 	constraints := strings.Split(tag, ",")
 	notNull := false
 	unique := false
+	uniqueWith := []string(nil)
 	indexed := false
 	primaryKey := false
 	belongsToTable := ""
@@ -713,22 +769,88 @@ func fieldConstraints(structField reflect.StructField) (bool, bool, bool, bool, 
 		case "primary_key":
 			primaryKey = true
 		default:
+			if strings.HasPrefix(constraint, "unique_with=") {
+				if uniqueWith != nil {
+					return false, false, nil, false, false, "", "", fmt.Errorf("activeso: duplicate unique_with constraint on field %s", structField.Name)
+				}
+				columns, err := uniqueWithColumns(strings.TrimPrefix(constraint, "unique_with="))
+				if err != nil {
+					return false, false, nil, false, false, "", "", fmt.Errorf("activeso: invalid unique_with constraint on field %s: %w", structField.Name, err)
+				}
+				uniqueWith = columns
+				continue
+			}
 			if !strings.HasPrefix(constraint, "belongs_to=") {
-				return false, false, false, false, "", "", fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
+				return false, false, nil, false, false, "", "", fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
 			}
 			if belongsToTable != "" {
-				return false, false, false, false, "", "", fmt.Errorf("activeso: duplicate belongs_to constraint on field %s", structField.Name)
+				return false, false, nil, false, false, "", "", fmt.Errorf("activeso: duplicate belongs_to constraint on field %s", structField.Name)
 			}
 
 			var err error
 			belongsToTable, belongsToColumn, err = belongsToTarget(strings.TrimPrefix(constraint, "belongs_to="))
 			if err != nil {
-				return false, false, false, false, "", "", fmt.Errorf("activeso: invalid belongs_to constraint on field %s: %w", structField.Name, err)
+				return false, false, nil, false, false, "", "", fmt.Errorf("activeso: invalid belongs_to constraint on field %s: %w", structField.Name, err)
+			}
+		}
+	}
+	if unique && uniqueWith != nil {
+		return false, false, nil, false, false, "", "", fmt.Errorf("activeso: field %s cannot combine unique and unique_with", structField.Name)
+	}
+
+	return notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, nil
+}
+
+// uniqueWithColumns validates the ordered columns used by a composite unique index.
+func uniqueWithColumns(value string) ([]string, error) {
+	// Initialize Variables
+	parts := strings.Split(value, "+")
+	columns := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+
+	// Require simple, distinct column identifiers to keep tags out of generated SQL.
+	for _, column := range parts {
+		if !schemaIdentifier(column) {
+			return nil, fmt.Errorf("column %q must be a simple identifier", column)
+		}
+		key := strings.ToLower(column)
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("column %q is listed more than once", column)
+		}
+		seen[key] = struct{}{}
+		columns = append(columns, column)
+	}
+
+	return columns, nil
+}
+
+// validateUniqueWith confirms every composite unique declaration references mapped columns.
+func validateUniqueWith(fields []field) error {
+	// Initialize Variables
+	columns := make(map[string]struct{}, len(fields))
+
+	// Build a case-insensitive set because SQLite column names are case-insensitive.
+	for _, field := range fields {
+		columns[strings.ToLower(field.column)] = struct{}{}
+	}
+	for _, field := range fields {
+		if field.uniqueWith == nil {
+			continue
+		}
+		if field.isID {
+			return fmt.Errorf("activeso: primary key field %s cannot declare unique_with", field.column)
+		}
+		for _, column := range field.uniqueWith {
+			if strings.EqualFold(field.column, column) {
+				return fmt.Errorf("activeso: unique_with on field %s cannot include itself", field.column)
+			}
+			if _, found := columns[strings.ToLower(column)]; !found {
+				return fmt.Errorf("activeso: unique_with on field %s references undefined column %s", field.column, column)
 			}
 		}
 	}
 
-	return notNull, unique, indexed, primaryKey, belongsToTable, belongsToColumn, nil
+	return nil
 }
 
 // belongsToTarget validates and splits a table(column) foreign-key target.
@@ -794,19 +916,12 @@ func snakeCase(value string) string {
 	return builder.String()
 }
 
-// pluralize converts the common singular table identifier forms used by Model defaults.
+// pluralize converts a table identifier to its English plural without duplicating plural names.
 func pluralize(value string) string {
 	// Initialize Variables
-	last := value[len(value)-1:]
+	plural := flect.Pluralize(value)
 
-	if strings.HasSuffix(value, "ch") || strings.HasSuffix(value, "sh") || strings.ContainsAny(last, "sxz") {
-		return value + "es"
-	}
-	if strings.HasSuffix(value, "y") && len(value) > 1 && !strings.ContainsAny(value[len(value)-2:len(value)-1], "aeiou") {
-		return value[:len(value)-1] + "ies"
-	}
-
-	return value + "s"
+	return plural
 }
 
 // quoteIdentifier quotes a trusted schema identifier for use in generated SQL.
@@ -927,7 +1042,7 @@ func (model *model[T]) fieldForColumn(column string) (field, bool) {
 	var zero field
 
 	for _, field := range model.fields {
-		if field.column == column {
+		if strings.EqualFold(field.column, column) {
 			return field, true
 		}
 	}
@@ -935,10 +1050,83 @@ func (model *model[T]) fieldForColumn(column string) (field, bool) {
 	return zero, false
 }
 
-// createUniqueIndexes creates every unique index declared by the current model.
+// ensureCompositeUniqueIndexesDeclared rejects implicit removal of ActiveSo-managed composite unique indexes.
+func (model *model[T]) ensureCompositeUniqueIndexesDeclared(ctx context.Context, transaction *sql.Tx) error {
+	// Initialize Variables
+	expected := model.compositeUniqueIndexes()
+	statement := "SELECT name FROM sqlite_schema WHERE type = 'index' AND LOWER(tbl_name) = LOWER(?)"
+	prefix := "activeso_" + hex.EncodeToString([]byte(strings.ToLower(model.tableName))) + "_"
+	suffix := "_unique_with"
+	rows, err := transaction.QueryContext(ctx, statement, model.tableName)
+
+	if err != nil {
+		return fmt.Errorf("activeso: inspect composite unique indexes for %s: %w", model.tableName, err)
+	}
+	defer rows.Close()
+
+	// Only treat indexes with ActiveSo's deterministic composite naming scheme as managed.
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("activeso: inspect composite unique indexes for %s: %w", model.tableName, err)
+		}
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		if _, declared := expected[name]; declared {
+			continue
+		}
+
+		columns, err := model.indexColumns(ctx, transaction, name)
+		if err != nil {
+			return err
+		}
+		arguments := make([]string, 0, len(columns))
+		for _, column := range columns {
+			arguments = append(arguments, fmt.Sprintf("%q", column))
+		}
+		return fmt.Errorf("activeso: cannot automatically remove the composite unique index for %s(%s); call DropUniqueWith(ctx, %s)", model.tableName, strings.Join(columns, ", "), strings.Join(arguments, ", "))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("activeso: inspect composite unique indexes for %s: %w", model.tableName, err)
+	}
+
+	return nil
+}
+
+// indexColumns returns the ordered columns belonging to an existing SQLite index.
+func (model *model[T]) indexColumns(ctx context.Context, transaction *sql.Tx, name string) ([]string, error) {
+	// Initialize Variables
+	statement := fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(name))
+	rows, err := transaction.QueryContext(ctx, statement)
+	columns := make([]string, 0)
+
+	if err != nil {
+		return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
+	}
+	defer rows.Close()
+
+	// Preserve SQLite's sequence order so callers can reproduce the managed index name.
+	for rows.Next() {
+		var sequence, columnIndex int
+		var column string
+		if err := rows.Scan(&sequence, &columnIndex, &column); err != nil {
+			return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
+	}
+
+	return columns, nil
+}
+
+// createUniqueIndexes creates every single-column and composite unique index declared by the current model.
 func (model *model[T]) createUniqueIndexes(ctx context.Context, transaction *sql.Tx) error {
 	// Initialize Variables
 	fields := model.fields
+	compositeIndexes := model.compositeUniqueIndexes()
 
 	for _, field := range fields {
 		if !field.unique || field.isID {
@@ -948,6 +1136,17 @@ func (model *model[T]) createUniqueIndexes(ctx context.Context, transaction *sql
 		statement := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s)", quoteIdentifier(model.uniqueIndexName(field)), quoteIdentifier(model.tableName), quoteIdentifier(field.column))
 		if _, err := transaction.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("activeso: create unique index for %s.%s: %w", model.tableName, field.column, err)
+		}
+	}
+	for name, fields := range compositeIndexes {
+		columns := make([]string, 0, len(fields))
+		for _, field := range fields {
+			columns = append(columns, quoteIdentifier(field.column))
+		}
+
+		statement := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s)", quoteIdentifier(name), quoteIdentifier(model.tableName), strings.Join(columns, ", "))
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("activeso: create composite unique index for %s: %w", model.tableName, err)
 		}
 	}
 
@@ -1164,6 +1363,43 @@ func sqlColumnType(field field) (string, error) {
 	return "", fmt.Errorf("activeso: cannot infer a SQL type for %s", field.goType)
 }
 
+// sqliteTypeAffinity returns SQLite's comparison affinity for a declared column type.
+func sqliteTypeAffinity(columnType string) string {
+	// Initialize Variables
+	normalized := strings.ToUpper(strings.TrimSpace(columnType))
+
+	// Treat SQLite type synonyms as equivalent so legacy schemas remain compatible.
+	switch {
+	case strings.Contains(normalized, "INT"):
+		return "INTEGER"
+	case strings.Contains(normalized, "CHAR"), strings.Contains(normalized, "CLOB"), strings.Contains(normalized, "TEXT"):
+		return "TEXT"
+	case strings.Contains(normalized, "BLOB") || normalized == "":
+		return "BLOB"
+	case strings.Contains(normalized, "REAL"), strings.Contains(normalized, "FLOA"), strings.Contains(normalized, "DOUB"):
+		return "REAL"
+	default:
+		return "NUMERIC"
+	}
+}
+
+// managedUniqueIndexExists reports whether ActiveSo's unique index still exists for field.
+func (model *model[T]) managedUniqueIndexExists(ctx context.Context, transaction *sql.Tx, field field) (bool, error) {
+	// Initialize Variables
+	statement := "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ? AND LOWER(tbl_name) = LOWER(?) LIMIT 1"
+	value := 0
+
+	// Only identify indexes with ActiveSo's deterministic name, never user-managed uniqueness.
+	if err := transaction.QueryRowContext(ctx, statement, model.uniqueIndexName(field), model.tableName).Scan(&value); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("activeso: inspect managed unique index for %s.%s: %w", model.tableName, field.column, err)
+	}
+
+	return true, nil
+}
+
 // existingColumns returns each column's identity metadata from the model's existing table.
 func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx) (map[string]columnInfo, error) {
 	// Initialize Variables
@@ -1191,7 +1427,7 @@ func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx)
 		if primaryKey {
 			primaryKeyColumns++
 		}
-		columns[strings.ToLower(name)] = columnInfo{primaryKey: primaryKey}
+		columns[strings.ToLower(name)] = columnInfo{columnType: columnType, notNull: notNull, primaryKey: primaryKey}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("activeso: iterate columns for %s: %w", model.tableName, err)
@@ -1298,6 +1534,94 @@ func (model *model[T]) uniqueIndexName(field field) string {
 	name := "activeso_" + table + "_" + column + "_unique"
 
 	return name
+}
+
+// compositeUniqueIndexes returns the deterministic indexes declared by unique_with tags.
+func (model *model[T]) compositeUniqueIndexes() map[string][]field {
+	// Initialize Variables
+	indexes := make(map[string][]field)
+
+	// Preserve struct-field order because it defines the composite index order.
+	for _, owner := range model.fields {
+		if owner.uniqueWith == nil {
+			continue
+		}
+		fields := make([]field, 0, len(owner.uniqueWith)+1)
+		fields = append(fields, owner)
+		for _, column := range owner.uniqueWith {
+			related, _ := model.fieldForColumn(column)
+			fields = append(fields, related)
+		}
+		indexes[model.uniqueWithIndexName(fields)] = fields
+	}
+
+	return indexes
+}
+
+// uniqueWithColumnsForDrop canonicalizes mapped columns and accepts validated model-omitted columns.
+func (model *model[T]) uniqueWithColumnsForDrop(columns []string) ([]string, error) {
+	// Initialize Variables
+	indexColumns := make([]string, 0, len(columns))
+	seen := make(map[string]struct{}, len(columns))
+
+	// Preserve order while allowing a migration to remove an index whose column was omitted from the model.
+	if len(columns) < 2 {
+		return nil, fmt.Errorf("activeso: DropUniqueWith requires at least two columns")
+	}
+	for _, column := range columns {
+		canonicalColumn := column
+		if field, found := model.fieldForColumn(column); found {
+			canonicalColumn = field.column
+		} else if !schemaIdentifier(column) {
+			return nil, fmt.Errorf("activeso: model-omitted column %s must be a simple identifier", column)
+		}
+		key := strings.ToLower(canonicalColumn)
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("activeso: column %s is listed more than once", column)
+		}
+		seen[key] = struct{}{}
+		indexColumns = append(indexColumns, canonicalColumn)
+	}
+
+	return indexColumns, nil
+}
+
+// declaresUniqueWithColumns reports whether columns are currently protected by a matching unique_with tag.
+func (model *model[T]) declaresUniqueWithColumns(columns []string) bool {
+	// Initialize Variables
+	name := model.uniqueWithIndexNameForColumns(columns)
+	_, declared := model.compositeUniqueIndexes()[name]
+
+	return declared
+}
+
+// uniqueWithIndexName returns an unambiguous stable name for an ordered composite unique index.
+func (model *model[T]) uniqueWithIndexName(fields []field) string {
+	// Initialize Variables
+	columns := make([]string, 0, len(fields))
+
+	// Reuse the column-based name so explicit removals target the same managed index.
+	for _, field := range fields {
+		columns = append(columns, field.column)
+	}
+
+	return model.uniqueWithIndexNameForColumns(columns)
+}
+
+// uniqueWithIndexNameForColumns returns an unambiguous stable name for ordered composite index columns.
+func (model *model[T]) uniqueWithIndexNameForColumns(columns []string) string {
+	// Initialize Variables
+	tableName := strings.ToLower(model.tableName)
+	normalizedColumns := make([]string, 0, len(columns))
+
+	// Use a separator before hex encoding to avoid collisions between column sequences.
+	for _, column := range columns {
+		normalizedColumns = append(normalizedColumns, strings.ToLower(column))
+	}
+	table := hex.EncodeToString([]byte(tableName))
+	columnsKey := hex.EncodeToString([]byte(strings.Join(normalizedColumns, "\x00")))
+
+	return "activeso_" + table + "_" + columnsKey + "_unique_with"
 }
 
 // indexName returns an unambiguous stable name used for one field's ordinary index.

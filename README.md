@@ -71,9 +71,21 @@ func example(ctx context.Context) error {
 }
 ```
 
-`Model` uses plural snake_case table names by default (`User` maps to `users`). 
+`Model` uses plural snake_case table names by default. English inflection handles common and irregular forms (`User` → `users`, `City` → `cities`, `Person` → `people`) and does not double-pluralize a type already named `Users`.
 
-Implement `TableName() string` on a model for an explicit table name. 
+Implement `TableName() string` whenever your database uses a specific or domain-specific table name. For example:
+
+```go
+type Customer struct {
+	activeso.Record
+
+	ID string `db:"id"`
+}
+
+func (Customer) TableName() string {
+	return "crm_customers"
+}
+```
 
 Run `AutoMigrate(ctx)` separately during application setup or deployment when you want ActiveSo to create the table, add missing nullable columns, and create tagged unique indexes; it is not required for normal model initialization or record operations.
 
@@ -138,6 +150,7 @@ type City struct {
 | --- | --- | --- |
 | `not_null` | Adds `NOT NULL` when creating a table. ActiveSo refuses to add a new required column to an existing table automatically. | Turso rejects `NULL` values. |
 | `unique` | Creates a stable, unambiguous unique index for the table and column. | `Create` and `Save` check for an existing value first and return an error matching `activeso.ErrUnique`; the Turso index remains the concurrency-safe authority. |
+| `unique_with=column[+column...]` | Creates a stable composite unique index beginning with the tagged field followed by the named mapped columns. | Turso rejects duplicate combinations with an error matching `activeso.ErrUnique`. |
 | `index` | Creates a stable, unambiguous non-unique index for the table and column. | Makes equality lookups such as `FindBy` eligible to use a Turso index. |
 | `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use a supported immutable scalar type. |
 | `belongs_to=table(column)` | Adds `REFERENCES table(column)` when creating a table or adding a missing nullable column. It does not attach a foreign key to an existing column. | Turso rejects non-`NULL` values that do not exist in the referenced column when foreign-key enforcement is enabled. |
@@ -151,6 +164,31 @@ If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly o
 ```go
 RegionID string `db:"region_id" activeso:"not_null,belongs_to=regions(id)"`
 ```
+
+Use `unique_with` when a combination of fields, rather than one field alone, must be unique. The tagged field is the first index column and named columns follow it in the listed order:
+
+```go
+type OrganizationCustomer struct {
+	activeso.Record
+
+	ID             string `db:"id"`
+	CustomerID     string `db:"customer_id" activeso:"not_null,index,belongs_to=customers(id),unique_with=organization_id"`
+	OrganizationID string `db:"organization_id" activeso:"not_null,index,belongs_to=organizations(id)"`
+}
+```
+
+`AutoMigrate(ctx)` creates a unique index on `(customer_id, organization_id)`, preventing a customer from joining the same organization twice while allowing that customer to join other organizations. Keep the individual `index` tags when `FindBy` queries either column independently.
+
+To remove a `unique_with` constraint, remove the tag first and then run the explicit migration with columns in the same order. The columns may be omitted from the current model, allowing an index to be removed before a later `DropColumn` migration:
+
+```go
+membershipModel := activeso.Model[OrganizationCustomer](db)
+if err := membershipModel.DropUniqueWith(ctx, "customer_id", "organization_id"); err != nil {
+	return err
+}
+```
+
+`AutoMigrate(ctx)` rejects an implicit removal and directs callers to `DropUniqueWith`.
 
 ## References
 
@@ -210,7 +248,7 @@ if err := userModel.AutoMigrate(ctx); err != nil {
 
 ### Explicit migrations
 
-`AutoMigrate(ctx)` is intentionally additive and safe: it never drops data, removes indexes, changes column types, or tightens existing constraints. Make destructive schema changes deliberately by first updating the model definition, then calling the matching operation during deployment.
+`AutoMigrate(ctx)` is intentionally additive and safe: it never drops data, removes indexes, changes column types, or tightens existing constraints. When it detects a destructive change it can identify safely, its error directs you to the matching explicit API: a new `not_null` field or an existing nullable field made `not_null` requires a nullable addition, a backfill, and `SetNotNull(ctx, column)`; a changed non-primary-key storage type requires `ChangeColumnType(ctx, column)`; a primary-key type change requires a dedicated manual migration; and removing `unique` requires `DropUnique(ctx, column)` when ActiveSo's managed index exists. Make destructive schema changes deliberately by first updating the model definition, then calling the matching operation during deployment. Removing a model field is not treated as a drop request because ActiveSo intentionally supports database columns that are omitted from the Go struct; call `DropColumn(ctx, column)` explicitly.
 
 | Operation | Required model change | Effect |
 | --- | --- | --- |
