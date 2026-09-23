@@ -205,6 +205,13 @@ type multiplePrimaryKeyUser struct {
 	ExternalID string `db:"external_id" activeso:"primary_key"`
 }
 
+type primaryKeyUniqueWithUser struct {
+	Record
+
+	ID    string `db:"id" activeso:"unique_with=email"`
+	Email string `db:"email"`
+}
+
 type mutablePrimaryKeyUser struct {
 	Record
 
@@ -1479,6 +1486,7 @@ func TestModelRejectsInvalidPrimaryKeyMappings(t *testing.T) {
 
 	assertModelPanics(t, func() { Model[duplicateColumnUser](db) })
 	assertModelPanics(t, func() { Model[multiplePrimaryKeyUser](db) })
+	assertModelPanics(t, func() { Model[primaryKeyUniqueWithUser](db) })
 	assertModelPanics(t, func() { Model[mutablePrimaryKeyUser](db) })
 	assertModelPanics(t, func() { Model[uintPrimaryKeyUser](db) })
 	assertModelPanics(t, func() { Model[uint64PrimaryKeyUser](db) })

@@ -651,9 +651,6 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	if explicitPrimaryKeyCount > 1 {
 		return nil, fmt.Errorf("activeso: model type %s declares more than one primary_key field", typeOfT)
 	}
-	if err := validateUniqueWith(fields); err != nil {
-		return nil, err
-	}
 	for index := range fields {
 		if fields[index].primaryKey || (explicitPrimaryKeyCount == 0 && strings.EqualFold(fields[index].column, "id")) {
 			if model.idField.goType != nil {
@@ -668,6 +665,9 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	}
 	if model.idField.goType == nil {
 		return nil, fmt.Errorf("activeso: model type %s must expose an id column or primary_key field", typeOfT)
+	}
+	if err := validateUniqueWith(fields); err != nil {
+		return nil, err
 	}
 
 	model.tableName = tableName[T](typeOfT)
