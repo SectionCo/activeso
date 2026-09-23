@@ -309,7 +309,7 @@ func (compositeMembershipV1) TableName() string {
 // TableName maps compositeMembershipV2 to the shared membership test table.
 func (compositeMembershipV2) TableName() string {
 	// Initialize Variables
-	name := "composite_memberships"
+	name := "COMPOSITE_MEMBERSHIPS"
 
 	return name
 }

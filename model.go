@@ -1054,7 +1054,7 @@ func (model *model[T]) fieldForColumn(column string) (field, bool) {
 func (model *model[T]) ensureCompositeUniqueIndexesDeclared(ctx context.Context, transaction *sql.Tx) error {
 	// Initialize Variables
 	expected := model.compositeUniqueIndexes()
-	statement := "SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = ?"
+	statement := "SELECT name FROM sqlite_schema WHERE type = 'index' AND LOWER(tbl_name) = LOWER(?)"
 	prefix := "activeso_" + hex.EncodeToString([]byte(strings.ToLower(model.tableName))) + "_"
 	suffix := "_unique_with"
 	rows, err := transaction.QueryContext(ctx, statement, model.tableName)
