@@ -4,12 +4,13 @@ go 1.25.0
 
 require (
 	github.com/labstack/echo/v5 v5.3.1
-	github.com/sectionco/activeso v0.0.0
+	github.com/sectionco/activeso v1.0.4
 	turso.tech/database/tursogo v0.7.2
 )
 
 require (
 	github.com/ebitengine/purego v0.9.1 // indirect
+	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/tursodatabase/turso-go-platform-libs v0.7.2 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 )
