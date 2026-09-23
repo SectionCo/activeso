@@ -96,6 +96,13 @@ type migrationUserV3 struct {
 	Required string `db:"required" activeso:"not_null"`
 }
 
+type migrationUserRequiredEmail struct {
+	Record
+
+	ID    string `db:"id"`
+	Email string `db:"email" activeso:"not_null"`
+}
+
 type migrationUserIntegerEmail struct {
 	Record
 
@@ -325,6 +332,14 @@ func (migrationUserV2) TableName() string {
 
 // TableName maps migrationUserV3 to the shared migration test table.
 func (migrationUserV3) TableName() string {
+	// Initialize Variables
+	name := "migration_users"
+
+	return name
+}
+
+// TableName maps migrationUserRequiredEmail to the shared migration test table.
+func (migrationUserRequiredEmail) TableName() string {
 	// Initialize Variables
 	name := "migration_users"
 
@@ -819,7 +834,7 @@ func TestAutoMigrateLegacyTimestamps(t *testing.T) {
 	model := Model[testUser](db)
 	var createdAt, updatedAt string
 
-	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT)"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES ('existing', 'existing@example.com')"); err != nil {
@@ -943,12 +958,15 @@ func TestAutoMigrateEvolvesSafeSchemaChanges(t *testing.T) {
 func TestAutoMigrateHintsExplicitMigrations(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	notNullDB := openTestDatabase(t, ctx)
+	newRequiredColumnDB := openTestDatabase(t, ctx)
+	existingRequiredColumnDB := openTestDatabase(t, ctx)
 	typeDB := openTestDatabase(t, ctx)
 	primaryKeyDB := openTestDatabase(t, ctx)
 	uniqueDB := openTestDatabase(t, ctx)
-	versionOne := Model[migrationUserV1](notNullDB)
-	versionThree := Model[migrationUserV3](notNullDB)
+	versionOne := Model[migrationUserV1](newRequiredColumnDB)
+	versionThree := Model[migrationUserV3](newRequiredColumnDB)
+	existingRequiredVersionOne := Model[migrationUserV1](existingRequiredColumnDB)
+	requiredEmail := Model[migrationUserRequiredEmail](existingRequiredColumnDB)
 	typeVersionOne := Model[migrationUserV1](typeDB)
 	integerEmail := Model[migrationUserIntegerEmail](typeDB)
 	primaryKeyVersionOne := Model[migrationUserV1](primaryKeyDB)
@@ -964,6 +982,15 @@ func TestAutoMigrateHintsExplicitMigrations(t *testing.T) {
 	err = versionThree.AutoMigrate(ctx)
 	if err == nil || !strings.Contains(err.Error(), `SetNotNull(ctx, "required")`) {
 		t.Fatalf("not-null AutoMigrate() error = %v, want SetNotNull hint", err)
+	}
+
+	// Tightening an existing nullable column also requires an explicit rebuild.
+	if err := existingRequiredVersionOne.AutoMigrate(ctx); err != nil {
+		t.Fatalf("existing required-column v1 AutoMigrate() error = %v", err)
+	}
+	err = requiredEmail.AutoMigrate(ctx)
+	if err == nil || !strings.Contains(err.Error(), `SetNotNull(ctx, "email")`) {
+		t.Fatalf("existing required-column AutoMigrate() error = %v, want SetNotNull hint", err)
 	}
 
 	// Changing an existing column's storage type requires an explicit rebuild.
@@ -1359,7 +1386,7 @@ func TestAutoMigrateAcceptsUniqueLegacyID(t *testing.T) {
 	db := openTestDatabase(t, ctx)
 	model := Model[testUser](db)
 
-	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT UNIQUE, email TEXT, embedding BLOB)"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT UNIQUE, email TEXT NOT NULL, embedding BLOB)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := model.AutoMigrate(ctx); err != nil {

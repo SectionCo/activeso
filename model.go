@@ -43,6 +43,7 @@ const (
 
 type columnInfo struct {
 	columnType string
+	notNull    bool
 	primaryKey bool
 	unique     bool
 }
@@ -221,6 +222,9 @@ func (model *model[T]) AutoMigrate(ctx context.Context) error {
 					return fmt.Errorf("activeso: cannot automatically change primary-key type of %s.%s from %s to %s; use a dedicated manual migration", model.tableName, field.column, existingColumn.columnType, columnType)
 				}
 				return fmt.Errorf("activeso: cannot automatically change type of %s.%s from %s to %s; call ChangeColumnType(ctx, %q)", model.tableName, field.column, existingColumn.columnType, columnType, field.column)
+			}
+			if field.notNull && !existingColumn.notNull && !field.isID {
+				return fmt.Errorf("activeso: cannot automatically add the not_null constraint to %s.%s; backfill NULL values, then call SetNotNull(ctx, %q)", model.tableName, field.column, field.column)
 			}
 			if !field.unique && !field.isID {
 				exists, err := model.managedUniqueIndexExists(ctx, transaction, field)
@@ -1423,7 +1427,7 @@ func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx)
 		if primaryKey {
 			primaryKeyColumns++
 		}
-		columns[strings.ToLower(name)] = columnInfo{columnType: columnType, primaryKey: primaryKey}
+		columns[strings.ToLower(name)] = columnInfo{columnType: columnType, notNull: notNull, primaryKey: primaryKey}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("activeso: iterate columns for %s: %w", model.tableName, err)

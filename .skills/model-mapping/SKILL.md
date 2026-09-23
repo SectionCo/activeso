@@ -15,7 +15,7 @@
 
 ## Additive migrations and nullable reads
 
-- `AutoMigrate` compares SQLite column names case-insensitively.
+- `AutoMigrate` compares SQLite column names case-insensitively. It directs nullable-to-`not_null` transitions on existing columns to `SetNotNull` rather than silently accepting them.
 - New nullable scalar columns leave existing rows with SQL `NULL`.
 - Reads map `NULL` to zero values for plain strings, numbers, and booleans; use `database/sql` nullable types when `NULL` must remain distinguishable. `sql.NullString`, `sql.NullInt64`, `sql.NullFloat64`, and `sql.NullBool` map to TEXT, INTEGER, REAL, and INTEGER columns respectively.
 
