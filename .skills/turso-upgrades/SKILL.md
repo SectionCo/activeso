@@ -11,7 +11,7 @@
 
 The existing example setup using `turso.NewConnector("activeso-example.db")` and `sql.OpenDB(connector)` builds unchanged with v0.8.2. No application API migration was necessary. The root library keeps its Go 1.24.0 directive and the example keeps Go 1.25.0; this dependency upgrade did not require changing either.
 
-Full root tests (including timestamp replay and targeted migrations), vet, and module verification passed with v0.8.2. Example tests, vet, build, and module verification also passed. `TestExampleDatabaseLifecycle` uses a temporary local Turso database to verify AutoMigrate, Create, Find, bound Save/Delete, and timestamp population/preservation. Existing rendering tests remain in place.
+Root timestamp coverage lives in `model_test.go`, and targeted migration coverage lives in `migration_test.go`. See `../timestamp-replay/SKILL.md` for the current timestamp policy and coverage. In the example module, `TestExampleDatabaseLifecycle` uses a temporary local Turso database to verify AutoMigrate, Create, Find, bound Save/Delete, and timestamp population/preservation. Rendering tests cover the user-management page.
 
 These checks verify local engine compatibility on the current macOS host, not a remote Push/Pull cycle or every supported native platform.
 
