@@ -1274,23 +1274,12 @@ func (model *model[T]) createTimestampTriggers(ctx context.Context, transaction 
 	if len(updatedColumns) == 0 {
 		return nil
 	}
+	// Remove legacy guards as well: SQL timestamp values cannot identify replay versus application writes.
 	for _, trigger := range []string{insertTrigger, updateTrigger, createdAtTrigger, updatedAtTrigger} {
 		statement := "DROP TRIGGER IF EXISTS " + quoteIdentifier(trigger)
 		if _, err := transaction.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("activeso: replace timestamp trigger for %s: %w", model.tableName, err)
 		}
-	}
-
-	// Reject updates that attempt to replace an established creation timestamp.
-	createdAtStatement := fmt.Sprintf("CREATE TRIGGER %s BEFORE UPDATE OF %s ON %s WHEN OLD.%s IS NOT NULL AND NEW.%s IS NOT OLD.%s BEGIN SELECT RAISE(ABORT, 'activeso: activeso_created_at is immutable'); END", quoteIdentifier(createdAtTrigger), quoteIdentifier(createdAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn))
-	if _, err := transaction.ExecContext(ctx, createdAtStatement); err != nil {
-		return fmt.Errorf("activeso: create creation timestamp trigger for %s: %w", model.tableName, err)
-	}
-
-	// Reject direct timestamp replacements while allowing the managed trigger's current timestamp.
-	updatedAtStatement := fmt.Sprintf("CREATE TRIGGER %s BEFORE UPDATE OF %s ON %s WHEN NEW.%s IS NOT OLD.%s AND NEW.%s IS NOT CURRENT_TIMESTAMP BEGIN SELECT RAISE(ABORT, 'activeso: activeso_updated_at is managed'); END", quoteIdentifier(updatedAtTrigger), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn))
-	if _, err := transaction.ExecContext(ctx, updatedAtStatement); err != nil {
-		return fmt.Errorf("activeso: create update timestamp trigger for %s: %w", model.tableName, err)
 	}
 
 	// Fill nullable legacy timestamp columns when callers omit them during inserts.
@@ -1299,8 +1288,9 @@ func (model *model[T]) createTimestampTriggers(ctx context.Context, transaction 
 		return fmt.Errorf("activeso: create timestamp insert trigger for %s: %w", model.tableName, err)
 	}
 
-	// Restrict the trigger to data columns so its timestamp write cannot recursively trigger itself.
-	updateStatement := fmt.Sprintf("CREATE TRIGGER %s AFTER UPDATE OF %s ON %s BEGIN UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s IS NEW.%s; END", quoteIdentifier(updateTrigger), strings.Join(updatedColumns, ", "), quoteIdentifier(model.tableName), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.idField.column), quoteIdentifier(model.idField.column))
+	// Preserve changed timestamps supplied by row-image replay; ordinary data writes still refresh them.
+	// Restrict to data columns to avoid recursion. Equal supplied timestamps refresh like data-only writes.
+	updateStatement := fmt.Sprintf("CREATE TRIGGER %s AFTER UPDATE OF %s ON %s WHEN NEW.%s IS OLD.%s BEGIN UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s IS NEW.%s; END", quoteIdentifier(updateTrigger), strings.Join(updatedColumns, ", "), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.idField.column), quoteIdentifier(model.idField.column))
 	if _, err := transaction.ExecContext(ctx, updateStatement); err != nil {
 		return fmt.Errorf("activeso: create timestamp update trigger for %s: %w", model.tableName, err)
 	}

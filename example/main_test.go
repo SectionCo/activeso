@@ -1,13 +1,71 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v5"
+	"github.com/sectionco/activeso"
 )
+
+// TestExampleDatabaseLifecycle verifies the example model's persistence workflow with the Turso engine.
+func TestExampleDatabaseLifecycle(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db, err := sql.Open("turso", filepath.Join(t.TempDir(), "example.db"))
+	userModel := activeso.Model[User](db)
+	var user *User
+	var found *User
+
+	// Use an isolated local database without opening the example's existing data files.
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := userModel.AutoMigrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create and read a user with database-generated timestamps.
+	user, err = userModel.Create(ctx, User{Email: "example@null.live"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.ID == "" || user.CreatedAt.IsZero() || user.UpdatedAt.IsZero() {
+		t.Fatalf("created user = %+v", user)
+	}
+	found, err = userModel.Find(ctx, user.ID)
+	if err != nil || found.Email != user.Email {
+		t.Fatalf("Find() = %+v; error = %v", found, err)
+	}
+
+	// Save through the bound record and confirm the database contains the change.
+	found.Email = "updated@null.live"
+	if err := found.Save(ctx); err != nil {
+		t.Fatal(err)
+	}
+	found, err = userModel.Find(ctx, user.ID)
+	if err != nil || found.Email != "updated@null.live" || !found.CreatedAt.Equal(user.CreatedAt) {
+		t.Fatalf("saved user = %+v; error = %v", found, err)
+	}
+
+	// Delete through the bound record and verify the row is gone.
+	if err := found.Delete(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := userModel.Find(ctx, user.ID); !errors.Is(err, activeso.ErrNotFound) {
+		t.Fatalf("Find() after Delete() error = %v, want ErrNotFound", err)
+	}
+}
 
 // TestRenderPage verifies the page renders existing users and their management controls.
 func TestRenderPage(t *testing.T) {

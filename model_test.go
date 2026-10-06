@@ -871,6 +871,8 @@ func TestAutoMigrateTimestamps(t *testing.T) {
 	db := openTestDatabase(t, ctx)
 	model := Model[testUser](db)
 	var createdAt, updatedAt, createdDefault, updatedDefault string
+	var user *testUser
+	var err error
 
 	if err := model.AutoMigrate(ctx); err != nil {
 		t.Fatal(err)
@@ -881,29 +883,51 @@ func TestAutoMigrateTimestamps(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT dflt_value FROM pragma_table_info('users') WHERE name = 'activeso_updated_at'`).Scan(&updatedDefault); err != nil || updatedDefault != "CURRENT_TIMESTAMP" {
 		t.Fatalf("updated timestamp default = %q, error = %v", updatedDefault, err)
 	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES ('timestamped', 'timestamped@example.com')"); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email, embedding) VALUES ('timestamped', 'timestamped@example.com', vector32('[1, 0]'))"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&createdAt, &updatedAt); err != nil || createdAt == "" || updatedAt == "" {
 		t.Fatalf("insert timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
 	}
 
-	// Timestamp columns reject direct replacement while ordinary data updates remain allowed.
-	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_created_at = 'before' WHERE id = 'timestamped'"); err == nil {
-		t.Fatal("accepted a direct creation timestamp update")
+	// Timestamp-only replacements are allowed for replay without generating a new timestamp.
+	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_created_at = '2000-01-01 00:00:00', activeso_updated_at = '2001-01-01 00:00:00' WHERE id = 'timestamped'"); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_updated_at = 'before' WHERE id = 'timestamped'"); err == nil {
-		t.Fatal("accepted a direct update timestamp replacement")
+	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&createdAt, &updatedAt); err != nil || createdAt != "2000-01-01 00:00:00" || updatedAt != "2001-01-01 00:00:00" {
+		t.Fatalf("supplied timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
 	}
+
+	// A normal data update refreshes updated_at while leaving created_at alone.
 	if _, err := db.ExecContext(ctx, "UPDATE users SET email = 'changed@example.com' WHERE id = 'timestamped'"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&updatedAt); err != nil || updatedAt == "" {
-		t.Fatalf("updated timestamp = %q, error = %v", updatedAt, err)
+	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&createdAt, &updatedAt); err != nil || createdAt != "2000-01-01 00:00:00" || updatedAt == "" || updatedAt == "2001-01-01 00:00:00" {
+		t.Fatalf("updated timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
+	}
+
+	// Save ignores Go timestamp assignments and reloads the database-managed values.
+	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_updated_at = '2001-01-01 00:00:00' WHERE id = 'timestamped'"); err != nil {
+		t.Fatal(err)
+	}
+	user, err = model.Find(ctx, "timestamped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.CreatedAt.Format("2006-01-02 15:04:05") != "2000-01-01 00:00:00" || user.UpdatedAt.Format("2006-01-02 15:04:05") != "2001-01-01 00:00:00" {
+		t.Fatalf("loaded timestamps = %v, %v", user.CreatedAt, user.UpdatedAt)
+	}
+	user.CreatedAt = user.CreatedAt.AddDate(10, 0, 0)
+	user.UpdatedAt = user.UpdatedAt.AddDate(10, 0, 0)
+	if err := user.Save(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if user.CreatedAt.Format("2006-01-02 15:04:05") != "2000-01-01 00:00:00" || user.UpdatedAt.Format("2006-01-02 15:04:05") == "2001-01-01 00:00:00" || user.UpdatedAt.Year() == 2011 {
+		t.Fatalf("saved timestamps = %v, %v", user.CreatedAt, user.UpdatedAt)
 	}
 }
 
-// TestAutoMigrateLegacyTimestamps verifies old tables are populated and protected by timestamp triggers.
+// TestAutoMigrateLegacyTimestamps verifies old tables are populated by timestamp triggers.
 func TestAutoMigrateLegacyTimestamps(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
