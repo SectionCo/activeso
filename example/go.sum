@@ -19,8 +19,8 @@ github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/tursodatabase/turso-go-platform-libs v0.7.2 h1:5ysGFHJC+I39jT1CFq2TukwscyEjMJN8zAPFXTSwvFE=
-github.com/tursodatabase/turso-go-platform-libs v0.7.2/go.mod h1:bo+Lpv5OYOX1gRV9L5DLKMsYxmDs56SkZwnCOLEFcxU=
+github.com/tursodatabase/turso-go-platform-libs v0.8.2 h1:1pB5zYtlPVMDqGm5zFxjyell6vudj3GndnKM2vAsb08=
+github.com/tursodatabase/turso-go-platform-libs v0.8.2/go.mod h1:bo+Lpv5OYOX1gRV9L5DLKMsYxmDs56SkZwnCOLEFcxU=
 golang.org/x/net v0.57.0 h1:K5+3DljvIuDG9/Jv9rvyMywYNFCQ9RSUY6OOTTkT+tE=
 golang.org/x/net v0.57.0/go.mod h1:KpXc8iv+r3XplLAG/f7Jsf9RPszJzdR0f58q9vGOuEU=
 golang.org/x/sys v0.38.0 h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=
@@ -31,5 +31,5 @@ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8
 gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
-turso.tech/database/tursogo v0.7.2 h1:WhsLl67w/Kw7ACEsJaTlXIb1parIgRqUcB8AbNZsBqU=
-turso.tech/database/tursogo v0.7.2/go.mod h1:tmC+H2Ot+guA9bs5oOcbbmpj1mHFTa/g7QREXG5QHq0=
+turso.tech/database/tursogo v0.8.2 h1:rZa+ZzsTCj9quht5mpng92BF1c9DKiRZHNUVg8aooiQ=
+turso.tech/database/tursogo v0.8.2/go.mod h1:njSx52Ytbuvzt8y+fnW57BA1s/oPb5x1CN/zDHZpq40=
