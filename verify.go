@@ -100,7 +100,7 @@ func (model *model[T]) schemaProblems(ctx context.Context, includeHints bool) ([
 func (model *model[T]) structuralProblems(schema tableSchema) []string {
 	// Initialize Variables
 	var problems []string
-	idColumn, idFound := schema.columns[strings.ToLower(model.idField.column)]
+	_, idFound := schema.columns[strings.ToLower(model.idField.column)]
 
 	for _, field := range model.fields {
 		if _, found := schema.columns[strings.ToLower(field.column)]; !found {
@@ -115,8 +115,9 @@ func (model *model[T]) structuralProblems(schema tableSchema) []string {
 			}
 		}
 	}
-	// Save and Delete target one row by primary key, so the column must uniquely identify rows.
-	if idFound && !schema.uniqueColumn(model.idField.column) && !idColumn.primaryKey {
+	// Save and Delete target one row by primary key, so the column alone must uniquely identify rows.
+	// A column that is only part of a composite PRIMARY KEY does not, so uniqueColumn is the sole test.
+	if idFound && !schema.uniqueColumn(model.idField.column) {
 		problems = append(problems, fmt.Sprintf("primary key column %s needs a PRIMARY KEY or single-column unique index", model.idField.column))
 	}
 

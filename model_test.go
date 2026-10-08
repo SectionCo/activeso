@@ -624,6 +624,25 @@ func TestFirstUseRequiresProtectedPrimaryKey(t *testing.T) {
 	}
 }
 
+// TestFirstUseRejectsCompositePrimaryKey verifies an ID that is only part of a composite key is not accepted as unique.
+func TestFirstUseRejectsCompositePrimaryKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	// Rows may share an id across tenants, so Save and Delete by id could touch several rows.
+	execStatements(t, db, `CREATE TABLE plains (id TEXT, tenant_id TEXT, name TEXT, PRIMARY KEY (id, tenant_id))`)
+	if _, err := Model[Plain](db).All(ctx); err == nil || !strings.Contains(err.Error(), "primary key column id") {
+		t.Fatalf("All() error = %v, want primary key guidance", err)
+	}
+
+	// A single-column unique index on the modeled ID restores identity.
+	execStatements(t, db, `CREATE UNIQUE INDEX plains_id ON plains (id)`)
+	if _, err := Model[Plain](db).All(ctx); err != nil {
+		t.Fatalf("All() with a unique index error = %v", err)
+	}
+}
+
 // TestVerifyMatchesColumnsCaseInsensitively verifies identifier case does not cause false drift.
 func TestVerifyMatchesColumnsCaseInsensitively(t *testing.T) {
 	// Initialize Variables
