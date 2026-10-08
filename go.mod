@@ -1,4 +1,4 @@
-module github.com/sectionco/activeso
+module github.com/sectionco/activeso/v2
 
 go 1.24.0
 

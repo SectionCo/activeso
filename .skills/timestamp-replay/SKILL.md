@@ -1,33 +1,23 @@
-# Timestamp Replay Policy
+# Opt-In Timestamps
 
-## Replay boundary
+## Behavior
 
-Timestamp comparisons cannot distinguish a replayed row image from a direct application write. The trigger policy is value-based, not replay detection. Do not invent a native replay-context API or treat timestamp equality as authentication of a write's origin.
+- A model gets managed timestamps only when its embedded record carries the hint: ``activeso.Record `activeso:"timestamps"` ``. Without it ActiveSo never selects, writes, or parses `created_at`/`updated_at`, and `Record.CreatedAt`/`UpdatedAt` stay zero.
+- The columns are `created_at` and `updated_at` (renamed from 1.x `activeso_created_at`/`activeso_updated_at`) holding UTC text. `timestampValue` parses SQL date-time (`YYYY-MM-DD HH:MM:SS`) or RFC3339Nano.
+- ActiveSo writes timestamps in its own SQL: `Create` inserts `CURRENT_TIMESTAMP` for both columns; `Save` adds `updated_at = CURRENT_TIMESTAMP` and never touches `created_at`. The user's table needs no defaults and no triggers, and there are no ActiveSo-managed triggers anywhere. Because `Save` always has the `updated_at` assignment, even an ID-only model issues a real `UPDATE` (so `Save` returns `ErrNotFound` for a deleted row through `RowsAffected`).
+- After each write `refreshTimestamps` reads both columns back so the Go fields match the database. Reads project the columns after the model fields (`selectColumns`) and `scan` fills them.
+- Assignments to `Record.CreatedAt`/`UpdatedAt` are never persisted. `Bind` does not load timestamps.
+- A struct field mapped to `created_at` or `updated_at` is rejected at `Model` setup when the hint is set.
+- A missing timestamp column is a structural `SchemaError` naming both column names; an unparseable stored value returns a parse error that names them too. `Verify` also expects TEXT affinity.
 
-Local timestamp behavior does not establish end-to-end remote Push/Pull correctness; validate that separately through the consumer's sync SDK.
+## Replay and sync
 
-## Current guarantees and tradeoffs
+Writes outside ActiveSo (raw SQL, replayed row images) are not intercepted: they do not bump `updated_at`, and a replayed row image carries whatever timestamps it was captured with. Timestamps are metadata, not an authorization boundary or ordering guarantee. Local tests do not validate a remote Push/Pull cycle; validate that through the consumer's sync SDK. Never inspect a live synced replica through SQLite, a plain non-sync Turso connection, or the CLI.
 
-- Fresh tables retain TEXT NOT NULL timestamp columns with `CURRENT_TIMESTAMP` defaults. Legacy tables retain nullable columns, migration backfill, and an insert trigger that fills omitted/NULL timestamps.
-- The data-column AFTER UPDATE trigger refreshes `activeso_updated_at` only when `NEW.activeso_updated_at IS OLD.activeso_updated_at`. This includes no-op data assignments such as `SET email = email`.
-- If a statement changes the update timestamp, the supplied value is preserved even when data columns are also updated. Supplied timestamps are not required to equal the destination's current time.
-- A supplied update timestamp equal to the old value cannot be distinguished from an omitted timestamp; it refreshes on data-column writes. This policy does not guarantee exact original timestamps for every possible replay.
-- Timestamp-only updates do not invoke the data-column refresh trigger. `IS` provides NULL-safe comparison on legacy columns. Direct SQL can still set legacy nullable timestamps to NULL; fresh NOT NULL constraints remain authoritative.
-- Neither timestamp is SQL-protected against replacement. Creation time remains unchanged on ordinary ActiveSo/data-only updates, but direct SQL and row images can replace it. This explicitly gives up SQL-level immutability to avoid a second potential row-image rejection path.
-- ActiveSo `Create`/`Save` do not persist assignments to `Record.CreatedAt` or `Record.UpdatedAt`; reads and successful writes populate/refresh those fields from database values.
-- Callers supplying timestamps must use valid UTC timestamp text accepted by `timestampValue` (SQL date/time or RFC3339Nano). These timestamps are metadata, not an authorization boundary or a global ordering guarantee.
+## Upgrading a 1.x database
 
-## Upgrade and schema rebuilds
+1.x installed insert/update triggers (and, before 1.0.5, protection triggers) named `activeso_<hex of lowercase table>_timestamps_{insert,update,protect_created_at,protect_updated_at}`. Drop them before renaming the columns, because a column rename rewrites trigger bodies and would leave them pointing at missing columns. See the README's "Upgrading from 1.x".
 
-A package update alone cannot alter existing database triggers. Run `AutoMigrate` for each affected model. `createTimestampTriggers` drops the deterministic old protection-trigger names as well as the insert/update triggers, then reinstalls only insert and conditional-update behavior in the migration transaction. Repeated `AutoMigrate` retains this policy. Update every database that may execute replayed writes; mixed old/new trigger policies can still reject writes.
+## Coverage
 
-`managedTimestampTrigger` in `migration.go` intentionally continues recognizing the two old protection names so supported targeted table rebuilds can accept old schemas and replace their managed triggers using the new policy.
-
-Never inspect a live synced replica through SQLite, a plain non-sync Turso connection, or the CLI. Use the sync SDK or an offline copy. Tests here use isolated local databases, not live replicas.
-
-## Current coverage
-
-- `model_test.go` covers timestamp defaults, legacy-table backfill and insert behavior, timestamp-only replacement, ordinary automatic refresh with unchanged creation time, and Go timestamp loading/Save behavior.
-- Tests use isolated local databases, not live replicas. Local coverage does not verify a complete remote sync cycle.
-- Reading a `testUser` with a NULL embedding fails with `Conversion error: Expected blob value` through the `vector_extract` projection. Timestamp Find/Save coverage supplies a real vector to isolate timestamp behavior.
-- See `../turso-upgrades/SKILL.md` for the current dependency versions and validation workflow.
+`model_test.go`: opt-in versus no-hint behavior, missing-column errors, `Save` refreshing `updated_at` while `created_at` stays fixed (the test backdates both columns because `CURRENT_TIMESTAMP` has one-second resolution), and an ID-only timestamped model. Tests use isolated local databases.
