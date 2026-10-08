@@ -3,6 +3,7 @@ package activeso
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -40,6 +41,27 @@ type CodeCity struct {
 
 	ID       string `db:"id"`
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(code)"`
+}
+
+// Gadget has a field type ActiveSo cannot map to a SQL column.
+type Gadget struct {
+	Record
+
+	ID   string            `db:"id"`
+	Meta map[string]string `db:"meta"`
+}
+
+// Label converts itself to and from TEXT, so it needs no built-in mapping.
+type Label struct {
+	Text string
+}
+
+// Badge stores a self-converting Label.
+type Badge struct {
+	Record
+
+	ID    string `db:"id"`
+	Label Label  `db:"label"`
 }
 
 type CascadeCity struct {
@@ -196,6 +218,23 @@ type noPrimaryKeyUser struct {
 }
 
 // TableName maps CascadeCity to the shared cities table used by foreign-key tests.
+// Value converts the label to its TEXT representation.
+func (label Label) Value() (driver.Value, error) {
+	// Initialize Variables
+	text := label.Text
+
+	return text, nil
+}
+
+// Scan reads a TEXT value into the label.
+func (label *Label) Scan(value any) error {
+	// Initialize Variables
+	text, _ := value.(string)
+
+	label.Text = text
+	return nil
+}
+
 func (CascadeCity) TableName() string {
 	// Initialize Variables
 	name := "cities"
@@ -670,6 +709,27 @@ CREATE TABLE code_cities (id TEXT PRIMARY KEY, region_id TEXT REFERENCES regions
 	// A hint naming another column must not be accepted just because the target was omitted.
 	if err := Model[CodeCity](db).Verify(ctx); err == nil || !strings.Contains(err.Error(), "hint belongs_to=regions(code)") {
 		t.Fatalf("CodeCity Verify() error = %v, want missing foreign key to regions(code)", err)
+	}
+}
+
+// TestVerifyReportsUnmappableFieldTypes verifies Verify flags types with no SQL mapping unless they convert themselves.
+func TestVerifyReportsUnmappableFieldTypes(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	execStatements(t, db, `CREATE TABLE gadgets (id TEXT PRIMARY KEY, meta TEXT);
+CREATE TABLE badges (id TEXT PRIMARY KEY, label TEXT)`)
+
+	// A map has no column mapping and no Valuer, so the model cannot persist it.
+	err := Model[Gadget](db).Verify(ctx)
+	if !errors.Is(err, ErrSchemaMismatch) || !strings.Contains(err.Error(), "Go type map[string]string has no SQL column mapping") {
+		t.Fatalf("Gadget Verify() error = %v, want unmappable type problem", err)
+	}
+
+	// A type that implements driver.Valuer and sql.Scanner is storable without a built-in mapping.
+	if err := Model[Badge](db).Verify(ctx); err != nil {
+		t.Fatalf("Badge Verify() error = %v", err)
 	}
 }
 

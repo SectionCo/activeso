@@ -3,7 +3,9 @@ package activeso
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -136,8 +138,13 @@ func (model *model[T]) hintProblems(schema tableSchema) []string {
 		}
 
 		// A Go type that maps to a different storage affinity reads and writes unpredictably.
-		if columnType, err := sqlColumnType(field); err == nil && sqliteTypeAffinity(column.columnType) != sqliteTypeAffinity(columnType) {
+		columnType, typeErr := sqlColumnType(field)
+		if typeErr == nil && sqliteTypeAffinity(column.columnType) != sqliteTypeAffinity(columnType) {
 			problems = append(problems, fmt.Sprintf("column %s has type %q but its Go type expects %s", field.column, column.columnType, columnType))
+		}
+		// A type with no SQL mapping only works when it converts itself both ways, so report it up front.
+		if typeErr != nil && !selfConverting(field.goType) {
+			problems = append(problems, fmt.Sprintf("column %s: Go type %s has no SQL column mapping; use a supported type or implement driver.Valuer and sql.Scanner", field.column, field.goType))
 		}
 		if field.notNull && !column.notNull && !column.primaryKey {
 			problems = append(problems, fmt.Sprintf("hint not_null on %s, but the column allows NULL", field.column))
@@ -165,6 +172,16 @@ func (model *model[T]) hintProblems(schema tableSchema) []string {
 	}
 
 	return problems
+}
+
+// selfConverting reports whether typeOfT writes itself through driver.Valuer and reads itself through a pointer sql.Scanner.
+func selfConverting(typeOfT reflect.Type) bool {
+	// Initialize Variables
+	valuerType := reflect.TypeFor[driver.Valuer]()
+	scannerType := reflect.TypeFor[sql.Scanner]()
+
+	// Writes use the value's Valuer; reads scan into the field's address.
+	return typeOfT.Implements(valuerType) && reflect.PointerTo(typeOfT).Implements(scannerType)
 }
 
 // foreignKeyProblems checks one belongs_to field, and its on_delete=cascade hint, against the table's foreign keys.
