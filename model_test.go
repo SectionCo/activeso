@@ -35,6 +35,13 @@ type City struct {
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(id)"`
 }
 
+type CodeCity struct {
+	Record
+
+	ID       string `db:"id"`
+	RegionID string `db:"region_id" activeso:"belongs_to=regions(code)"`
+}
+
 type CascadeCity struct {
 	Record
 
@@ -640,6 +647,29 @@ func TestFirstUseRejectsCompositePrimaryKey(t *testing.T) {
 	execStatements(t, db, `CREATE UNIQUE INDEX plains_id ON plains (id)`)
 	if _, err := Model[Plain](db).All(ctx); err != nil {
 		t.Fatalf("All() with a unique index error = %v", err)
+	}
+}
+
+// TestVerifyResolvesOmittedForeignKeyTargets verifies REFERENCES without a column only matches the parent's primary key.
+func TestVerifyResolvesOmittedForeignKeyTargets(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	// The foreign keys omit their target column, so they reference regions' primary key, id.
+	execStatements(t, db, `CREATE TABLE regions (id TEXT PRIMARY KEY, code TEXT UNIQUE, name TEXT);
+CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT NOT NULL, region_id TEXT REFERENCES regions);
+CREATE INDEX cities_name ON cities (name);
+CREATE TABLE code_cities (id TEXT PRIMARY KEY, region_id TEXT REFERENCES regions)`)
+
+	// A hint naming the primary key matches the omitted target.
+	if err := Model[City](db).Verify(ctx); err != nil {
+		t.Fatalf("City Verify() error = %v", err)
+	}
+
+	// A hint naming another column must not be accepted just because the target was omitted.
+	if err := Model[CodeCity](db).Verify(ctx); err == nil || !strings.Contains(err.Error(), "hint belongs_to=regions(code)") {
+		t.Fatalf("CodeCity Verify() error = %v, want missing foreign key to regions(code)", err)
 	}
 }
 

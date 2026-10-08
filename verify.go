@@ -177,8 +177,8 @@ func (model *model[T]) foreignKeyProblems(schema tableSchema, field field) []str
 		if !strings.EqualFold(key.from, field.column) || !strings.EqualFold(key.table, field.belongsToTable) {
 			continue
 		}
-		// An empty target means the foreign key references the parent's primary key.
-		if key.to != "" && !strings.EqualFold(key.to, field.belongsToColumn) {
+		// inspectForeignKeys resolves an omitted target to the parent's primary key, so the column must match either way.
+		if !strings.EqualFold(key.to, field.belongsToColumn) {
 			continue
 		}
 		matched = true
@@ -387,6 +387,58 @@ func (model *model[T]) inspectForeignKeys(ctx context.Context) ([]foreignKeyInfo
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("activeso: iterate foreign keys for %s: %w", model.tableName, err)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("activeso: close foreign key inspection for %s: %w", model.tableName, err)
+	}
+
+	// REFERENCES parent without a column targets the parent's primary key, which PRAGMA reports as NULL.
+	// Resolve it after closing the listing so the connection is free.
+	for position := range keys {
+		if keys[position].to != "" {
+			continue
+		}
+		keys[position].to, err = model.primaryKeyColumn(ctx, keys[position].table)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return keys, nil
+}
+
+// primaryKeyColumn returns the sole primary-key column of table, or "" when it is missing, composite, or has none.
+func (model *model[T]) primaryKeyColumn(ctx context.Context, table string) (string, error) {
+	// Initialize Variables
+	rows, err := model.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(table)))
+	primaryKeys := []string(nil)
+
+	if err != nil {
+		return "", fmt.Errorf("activeso: inspect table %s for %s: %w", table, model.tableName, err)
+	}
+	defer rows.Close()
+
+	// Collect every column that takes part in the primary key.
+	for rows.Next() {
+		var index int
+		var name, columnType string
+		var notNull bool
+		var defaultValue any
+		var primaryKeyPosition int
+		if err := rows.Scan(&index, &name, &columnType, &notNull, &defaultValue, &primaryKeyPosition); err != nil {
+			return "", fmt.Errorf("activeso: inspect columns for %s: %w", table, err)
+		}
+		if primaryKeyPosition > 0 {
+			primaryKeys = append(primaryKeys, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("activeso: iterate columns for %s: %w", table, err)
+	}
+
+	// A composite key cannot satisfy a single-column belongs_to target.
+	if len(primaryKeys) != 1 {
+		return "", nil
+	}
+
+	return primaryKeys[0], nil
 }
