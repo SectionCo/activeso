@@ -12,13 +12,24 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v5"
-	"github.com/sectionco/activeso"
+	"github.com/sectionco/activeso/v2"
 	turso "turso.tech/database/tursogo"
 )
 
+// usersSchema is the application-owned DDL for the users table.
+// ActiveSo never creates or alters tables; the hints on User describe what this schema enforces.
+const usersSchema = `CREATE TABLE IF NOT EXISTS users (
+	id TEXT PRIMARY KEY,
+	email TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users (email);`
+
 // User maps an application user to the default users table.
+// The timestamps hint tells ActiveSo the table has created_at and updated_at columns.
 type User struct {
-	activeso.Record
+	activeso.Record `activeso:"timestamps"`
 
 	ID    string `db:"id"`
 	Email string `db:"email" activeso:"not_null,unique"`
@@ -100,11 +111,18 @@ func main() {
 	// Initialize ActiveSo Model
 	userModel := activeso.Model[User](db)
 
-	// AutoMigrate the User model.
-	// This will create the necessary database schema for the User model.
-	// If the schema already exists, it will be migrated to the latest version.
-	// We recommend calling this once during application startup.
-	if err := userModel.AutoMigrate(ctx); err != nil {
+	// Create the table with the application's own schema; ActiveSo does not manage migrations.
+	for _, statement := range strings.Split(usersSchema, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	// Verify reports any drift between the table and the User hints without changing the database.
+	if err := userModel.Verify(ctx); err != nil {
 		log.Fatal(err)
 	}
 

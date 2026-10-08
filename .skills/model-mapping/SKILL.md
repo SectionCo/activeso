@@ -1,29 +1,28 @@
 # ActiveSo model mapping
 
+## Fields and columns
+
+- Every exported field other than the embedded `activeso.Record` needs a `db` tag naming its column; `Model[T]` panics for an untagged field. `db:"-"` excludes a field. Column names are never derived from field names. Two fields cannot map to the same column (compared case-insensitively).
+- Table names default to the English-pluralized snake_case type name (`User` -> `users`, `Person` -> `people`, `Users` -> `users`); implement `TableName() string` to override it.
+
 ## Primary keys
 
 - A model embeds `activeso.Record` and has exactly one primary key.
-- `activeso:"primary_key"` explicitly selects a primary-key field. Without that tag, the field mapped to `id` is the primary key.
-- `AutoMigrate` rejects an existing table unless the modeled primary-key column is protected by a sole primary key or a single-column unique index. Composite primary keys do not uniquely identify one modeled ID. It also rejects a modeled primary-key storage-affinity change; primary-key rebuilds require a dedicated manual migration.
-- Primary keys must be immutable scalar Go types: strings, booleans, signed integers, `uint8`/`uint16`/`uint32`, and floats. `uint` and `uint64` are rejected during model construction because their full range exceeds Turso's signed 64-bit INTEGER representation; mutable values such as `[]byte` are also rejected.
+- The `primary_key` hint selects a primary-key field. Without it, the field mapped to `id` is the primary key.
+- Primary keys must be immutable scalar Go types: strings, booleans, signed integers, `uint8`/`uint16`/`uint32`, and floats. `uint` and `uint64` are rejected because their full range exceeds Turso's signed 64-bit INTEGER; mutable values such as `[]byte` are also rejected.
+- The table must protect the primary-key column with a sole `PRIMARY KEY` or a single-column unique index. This is checked structurally before the first operation; composite primary keys do not uniquely identify one modeled ID. See `../schema-verification/SKILL.md`.
 
-## Foreign keys
+## Hints
 
-- `activeso:"belongs_to=table(column)"` on a scalar field, including the primary-key field, adds an inline `REFERENCES table(column)` foreign key. Target table and column names must be simple identifiers, preventing tag content from becoming arbitrary SQL.
-- `activeso:"belongs_to=table(column),on_delete=cascade"` adds `ON DELETE CASCADE` to the inline foreign key. `on_delete=cascade` requires `belongs_to` on the same field and defaults to no cascade when absent. Enforcement requires `PRAGMA foreign_keys = ON` on the writing connection.
-- `AutoMigrate` creates the foreign key for new tables and for missing nullable linked columns. It intentionally does not retrofit a new foreign key onto an existing column; use a dedicated migration for that destructive schema change.
-- Changing `on_delete` on an existing foreign key likewise requires a dedicated migration; `AutoMigrate` does not rewrite the constraint.
-- Combine `belongs_to` with `not_null` on the foreign-key field when the relationship is required. Foreign-key enforcement remains the database's responsibility.
+Hints (the `activeso` struct tag) describe the schema the application owns and never change it: `primary_key`, `unique`, `unique_with=column[+column...]`, `index`, `not_null`, `belongs_to=table(column)`, and `on_delete=cascade` (requires `belongs_to`). Unknown or malformed hints panic at `Model` setup. `unique` and `unique_with` cannot be combined on one field; `unique_with` cannot be on the primary key, cannot list its own column, and must reference mapped columns. `belongs_to` targets must be simple identifiers. On the embedded `Record` the only hint is `timestamps` (see `../timestamp-replay/SKILL.md`).
 
-## Additive migrations and nullable reads
+Enforcement of foreign keys requires `PRAGMA foreign_keys = ON` on the writing connection; `Verify` only checks that the foreign key exists.
 
-- `AutoMigrate` compares SQLite column names case-insensitively. It directs nullable-to-`not_null` transitions on existing columns to `SetNotNull` rather than silently accepting them.
-- New nullable scalar columns leave existing rows with SQL `NULL`.
-- Reads map `NULL` to zero values for plain strings, numbers, and booleans; use `database/sql` nullable types when `NULL` must remain distinguishable. `sql.NullString`, `sql.NullInt64`, `sql.NullFloat64`, and `sql.NullBool` map to TEXT, INTEGER, REAL, and INTEGER columns respectively.
+## NULL handling and nullable wrappers
+
+- Reads map `NULL` to zero values for plain strings, numbers, and booleans, so rows written before a column was filled stay readable. Use `database/sql` nullable types when `NULL` must stay distinguishable: `sql.NullString`, `sql.NullInt64`, `sql.NullFloat64`, and `sql.NullBool` map to TEXT, INTEGER, REAL, and INTEGER columns respectively (`sqlColumnType`, used by `Verify`).
+- Reading a `Vector32` column that is NULL fails with `Conversion error: Expected blob value` through the `vector_extract` projection. Tests supply a real vector where a vector column is read.
 
 ## Indexes
 
-- `activeso:"index"` creates a non-unique single-column index during `AutoMigrate`; `FindBy(ctx, column, value)` safely queries any mapped column and returns all matches.
-
-- `activeso:"unique_with=column[+column...]"` creates an ordered composite unique index beginning with the tagged field. The tagged field cannot be a primary key, and each referenced column must be mapped, distinct, and different from the tagged field. `AutoMigrate` creates these indexes, but requires `DropUniqueWith(ctx, columns...)` after the tag is removed rather than dropping them implicitly. `DropUniqueWith` accepts its ordered column names even when one was omitted from the current model, provided model-omitted names are simple identifiers.
-- ActiveSo-generated ordinary and unique index names lowercase then hex-encode table and column names, making SQLite-global index names unambiguous and stable across case-only mapping changes. Managed-index lookup also compares SQLite table names case-insensitively. Single-column unique index names end in `_unique`, composite unique index names end in `_unique_with`, and ordinary index names end in `_index`.
+The `index` hint asserts an index begins with the column; `FindBy(ctx, column, value)` safely queries any mapped column and returns all matches. ActiveSo no longer generates or names indexes.

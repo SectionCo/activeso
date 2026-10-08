@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -38,22 +39,19 @@ type field struct {
 }
 
 const (
-	createdAtColumn = "activeso_created_at"
-	updatedAtColumn = "activeso_updated_at"
+	createdAtColumn = "created_at"
+	updatedAtColumn = "updated_at"
 )
 
-type columnInfo struct {
-	columnType string
-	notNull    bool
-	primaryKey bool
-	unique     bool
-}
-
 type model[T any] struct {
-	db        *sql.DB
-	tableName string
-	fields    []field
-	idField   field
+	db         *sql.DB
+	tableName  string
+	fields     []field
+	idField    field
+	timestamps bool
+
+	readyMutex sync.Mutex
+	ready      bool
 }
 
 type query[T any] struct {
@@ -65,8 +63,8 @@ type query[T any] struct {
 	limit            int
 }
 
-// Model binds an application-defined struct type to its Turso table using db.
-// T must embed activeso.Record and expose one primary_key field or an id column.
+// Model binds an application-defined struct type to an existing Turso table using db.
+// T must embed activeso.Record, tag every persisted field with db, and expose one primary_key field or an id column.
 func Model[T any](db *sql.DB) *model[T] {
 	// Initialize Variables
 	model, err := newModel[T](db)
@@ -87,14 +85,14 @@ func (model *model[T]) Create(ctx context.Context, value T) (*T, error) {
 	var statement string
 	var err error
 
-	// Generate an ID and validate constrained fields before inserting the record.
+	// Confirm the table matches the model, then generate an ID before inserting the record.
+	if err := model.ensureReady(ctx); err != nil {
+		return nil, err
+	}
 	if err := model.generateID(record); err != nil {
 		return nil, err
 	}
 	if err := model.bind(record); err != nil {
-		return nil, err
-	}
-	if err := model.validateUnique(ctx, record); err != nil {
 		return nil, err
 	}
 
@@ -179,195 +177,6 @@ func (model *model[T]) Bind(value *T) (*T, error) {
 	return value, nil
 }
 
-// AutoMigrate creates the model table, adds missing nullable columns, and creates unique indexes.
-func (model *model[T]) AutoMigrate(ctx context.Context) error {
-	// Initialize Variables
-	transaction, err := model.db.BeginTx(ctx, nil)
-	var createStatement string
-	var columns map[string]columnInfo
-	var idColumn columnInfo
-	var found bool
-
-	if err != nil {
-		return fmt.Errorf("activeso: begin migration for %s: %w", model.tableName, err)
-	}
-	defer transaction.Rollback()
-
-	// Create the table before checking its existing columns.
-	createStatement, err = model.createTableStatement()
-	if err != nil {
-		return err
-	}
-	if _, err := transaction.ExecContext(ctx, createStatement); err != nil {
-		return fmt.Errorf("activeso: create table %s: %w", model.tableName, err)
-	}
-
-	columns, err = model.existingColumns(ctx, transaction)
-	if err != nil {
-		return err
-	}
-	idColumn, found = columns[strings.ToLower(model.idField.column)]
-	if !found || !idColumn.unique {
-		return fmt.Errorf("activeso: existing table %s must define a primary key or unique constraint on %s", model.tableName, model.idField.column)
-	}
-	for _, field := range model.fields {
-		existingColumn, found := columns[strings.ToLower(field.column)]
-		if found {
-			// Detect changes that require the caller to opt into a destructive migration.
-			columnType, err := sqlColumnType(field)
-			if err != nil {
-				return err
-			}
-			if sqliteTypeAffinity(existingColumn.columnType) != sqliteTypeAffinity(columnType) {
-				if field.isID {
-					return fmt.Errorf("activeso: cannot automatically change primary-key type of %s.%s from %s to %s; use a dedicated manual migration", model.tableName, field.column, existingColumn.columnType, columnType)
-				}
-				return fmt.Errorf("activeso: cannot automatically change type of %s.%s from %s to %s; call ChangeColumnType(ctx, %q)", model.tableName, field.column, existingColumn.columnType, columnType, field.column)
-			}
-			if field.notNull && !existingColumn.notNull && !field.isID {
-				return fmt.Errorf("activeso: cannot automatically add the not_null constraint to %s.%s; backfill NULL values, then call SetNotNull(ctx, %q)", model.tableName, field.column, field.column)
-			}
-			if !field.unique && !field.isID {
-				exists, err := model.managedUniqueIndexExists(ctx, transaction, field)
-				if err != nil {
-					return err
-				}
-				if exists {
-					return fmt.Errorf("activeso: cannot automatically remove the unique index for %s.%s; call DropUnique(ctx, %q)", model.tableName, field.column, field.column)
-				}
-			}
-			continue
-		}
-		if field.notNull {
-			return fmt.Errorf("activeso: cannot automatically add required column %s to %s; add it as nullable, backfill its values, then call SetNotNull(ctx, %q)", field.column, model.tableName, field.column)
-		}
-
-		definition, err := model.columnDefinition(field, false)
-		if err != nil {
-			return err
-		}
-		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", quoteIdentifier(model.tableName), definition)
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("activeso: add column %s to %s: %w", field.column, model.tableName, err)
-		}
-	}
-
-	if err := model.createTimestampColumns(ctx, transaction, columns); err != nil {
-		return err
-	}
-	if err := model.ensureCompositeUniqueIndexesDeclared(ctx, transaction); err != nil {
-		return err
-	}
-	if err := model.createUniqueIndexes(ctx, transaction); err != nil {
-		return err
-	}
-	if err := model.createIndexes(ctx, transaction); err != nil {
-		return err
-	}
-	if err := model.createTimestampTriggers(ctx, transaction); err != nil {
-		return err
-	}
-
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("activeso: commit migration for %s: %w", model.tableName, err)
-	}
-
-	return nil
-}
-
-// DropUnique removes the unique index for column after its unique tag has been removed.
-func (model *model[T]) DropUnique(ctx context.Context, column string) error {
-	// Initialize Variables
-	field, found := model.fieldForColumn(column)
-
-	if !found {
-		return fmt.Errorf("activeso: column %s is not defined on %s", column, model.tableName)
-	}
-	if field.unique {
-		return fmt.Errorf("activeso: remove the unique constraint from %s before dropping its index", column)
-	}
-
-	statement := fmt.Sprintf("DROP INDEX IF EXISTS %s", quoteIdentifier(model.uniqueIndexName(field)))
-	if _, err := model.db.ExecContext(ctx, statement); err != nil {
-		return fmt.Errorf("activeso: drop unique index for %s.%s: %w", model.tableName, column, err)
-	}
-
-	return nil
-}
-
-// DropUniqueWith removes a composite unique index after its unique_with tag has been removed.
-func (model *model[T]) DropUniqueWith(ctx context.Context, columns ...string) error {
-	// Initialize Variables
-	indexColumns, err := model.uniqueWithColumnsForDrop(columns)
-
-	// Require the model to stop declaring the relationship before removing its protection.
-	if err != nil {
-		return err
-	}
-	if model.declaresUniqueWithColumns(indexColumns) {
-		return fmt.Errorf("activeso: remove the unique_with constraint before dropping its index")
-	}
-
-	statement := fmt.Sprintf("DROP INDEX IF EXISTS %s", quoteIdentifier(model.uniqueWithIndexNameForColumns(indexColumns)))
-	if _, err := model.db.ExecContext(ctx, statement); err != nil {
-		return fmt.Errorf("activeso: drop composite unique index for %s: %w", model.tableName, err)
-	}
-
-	return nil
-}
-
-// DropColumn rebuilds the table without column after its Go field has been removed.
-func (model *model[T]) DropColumn(ctx context.Context, column string) error {
-	// Initialize Variables
-	_, found := model.fieldForColumn(column)
-
-	if found {
-		return fmt.Errorf("activeso: remove field %s from the model before dropping its column", column)
-	}
-
-	return model.rebuildTable(ctx, column, "drop", "")
-}
-
-// ChangeColumnType rebuilds the table using the current Go type for column.
-func (model *model[T]) ChangeColumnType(ctx context.Context, column string) error {
-	// Initialize Variables
-	field, found := model.fieldForColumn(column)
-	var columnType string
-	var err error
-
-	if !found {
-		return fmt.Errorf("activeso: column %s is not defined on %s", column, model.tableName)
-	}
-
-	columnType, err = sqlColumnType(field)
-	if err != nil {
-		return err
-	}
-	return model.rebuildTable(ctx, column, "type", columnType)
-}
-
-// SetNotNull rebuilds the table with a NOT NULL constraint declared on column.
-func (model *model[T]) SetNotNull(ctx context.Context, column string) error {
-	// Initialize Variables
-	field, found := model.fieldForColumn(column)
-	statement := fmt.Sprintf("SELECT 1 FROM %s WHERE %s IS NULL LIMIT 1", quoteIdentifier(model.tableName), quoteIdentifier(column))
-	var nullValue int
-
-	if !found {
-		return fmt.Errorf("activeso: column %s is not defined on %s", column, model.tableName)
-	}
-	if !field.notNull {
-		return fmt.Errorf("activeso: add the not_null constraint to %s before tightening it", column)
-	}
-	if err := model.db.QueryRowContext(ctx, statement).Scan(&nullValue); err == nil {
-		return fmt.Errorf("activeso: cannot set %s.%s to NOT NULL while NULL values exist; backfill them, then retry SetNotNull(ctx, %q)", model.tableName, column, column)
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("activeso: check NULL values for %s.%s: %w", model.tableName, column, err)
-	}
-
-	return model.rebuildTable(ctx, column, "not_null", "")
-}
-
 // save updates every persisted field except the primary key for an already-bound record.
 func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	// Initialize Variables
@@ -385,13 +194,12 @@ func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	if !reflect.DeepEqual(currentID, originalID) {
 		return ErrIDChanged
 	}
-
-	assignments, arguments, err := model.updateValues(record)
-	if err != nil {
+	if err := model.ensureReady(ctx); err != nil {
 		return err
 	}
 
-	if err := model.validateUnique(ctx, record); err != nil {
+	assignments, arguments, err := model.updateValues(record)
+	if err != nil {
 		return err
 	}
 	if len(assignments) == 0 {
@@ -453,6 +261,9 @@ func (model *model[T]) delete(ctx context.Context, entity, originalID any) error
 	}
 	if !reflect.DeepEqual(currentID, originalID) {
 		return ErrIDChanged
+	}
+	if err := model.ensureReady(ctx); err != nil {
+		return err
 	}
 
 	statement := fmt.Sprintf("DELETE FROM %s WHERE %s = ?", quoteIdentifier(model.tableName), quoteIdentifier(model.idField.column))
@@ -520,6 +331,9 @@ func (query *query[T]) All(ctx context.Context) ([]*T, error) {
 	arguments, err := query.queryArguments()
 
 	if err != nil {
+		return nil, err
+	}
+	if err := query.model.ensureReady(ctx); err != nil {
 		return nil, err
 	}
 
@@ -619,17 +433,26 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	for index := range typeOfT.NumField() {
 		structField := typeOfT.Field(index)
 		if structField.Anonymous && structField.Type == reflect.TypeFor[Record]() {
+			// The embedded Record opts into managed timestamp columns with an activeso hint.
+			timestamps, err := recordHints(structField)
+			if err != nil {
+				return nil, err
+			}
+			model.timestamps = timestamps
 			continue
 		}
 		if !structField.IsExported() {
 			continue
 		}
 
-		column := columnName(structField)
+		column, err := columnName(typeOfT, structField)
+		if err != nil {
+			return nil, err
+		}
 		if column == "" {
 			continue
 		}
-		notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, onDeleteCascade, err := fieldConstraints(structField)
+		notNull, unique, uniqueWith, indexed, primaryKey, belongsToTable, belongsToColumn, onDeleteCascade, err := fieldHints(structField)
 		if err != nil {
 			return nil, err
 		}
@@ -669,6 +492,14 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 	}
 	if err := validateUniqueWith(fields); err != nil {
 		return nil, err
+	}
+	// Reserve the timestamp columns so a field cannot collide with the managed values.
+	if model.timestamps {
+		for _, reserved := range []string{createdAtColumn, updatedAtColumn} {
+			if _, exists := columns[reserved]; exists {
+				return nil, fmt.Errorf("activeso: model type %s maps a field to %s, which the timestamps hint reserves", typeOfT, reserved)
+			}
+		}
 	}
 
 	model.tableName = tableName[T](typeOfT)
@@ -728,27 +559,47 @@ func tableName[T any](typeOfT reflect.Type) string {
 	return pluralize(name)
 }
 
-// columnName resolves the db tag or derives a snake_case field name.
-func columnName(structField reflect.StructField) string {
+// columnName returns the column named by a field's db tag; every persisted field must declare one.
+func columnName(typeOfT reflect.Type, structField reflect.StructField) (string, error) {
 	// Initialize Variables
 	tag := structField.Tag.Get("db")
 	parts := strings.Split(tag, ",")
 
 	if tag == "-" {
-		return ""
+		return "", nil
 	}
-	if parts[0] != "" {
-		return parts[0]
+	if parts[0] == "" {
+		return "", fmt.Errorf("activeso: field %s on %s requires a db tag naming its column (use db:\"-\" to skip it)", structField.Name, typeOfT)
 	}
 
-	return snakeCase(structField.Name)
+	return parts[0], nil
 }
 
-// fieldConstraints parses supported ActiveSo schema constraints from a struct field.
-func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bool, bool, string, string, bool, error) {
+// recordHints parses the activeso hints declared on the embedded Record field.
+func recordHints(structField reflect.StructField) (bool, error) {
+	// Initialize Variables
+	hints := strings.Split(structField.Tag.Get("activeso"), ",")
+	timestamps := false
+
+	for _, hint := range hints {
+		switch hint {
+		case "", "-":
+			continue
+		case "timestamps":
+			timestamps = true
+		default:
+			return false, fmt.Errorf("activeso: unsupported hint %q on Record; the only supported hint is timestamps", hint)
+		}
+	}
+
+	return timestamps, nil
+}
+
+// fieldHints parses the ActiveSo schema hints declared on a struct field.
+func fieldHints(structField reflect.StructField) (bool, bool, []string, bool, bool, string, string, bool, error) {
 	// Initialize Variables
 	tag := structField.Tag.Get("activeso")
-	constraints := strings.Split(tag, ",")
+	hints := strings.Split(tag, ",")
 	notNull := false
 	unique := false
 	uniqueWith := []string(nil)
@@ -759,8 +610,8 @@ func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bo
 	onDeleteCascade := false
 	onDeleteSeen := false
 
-	for _, constraint := range constraints {
-		switch constraint {
+	for _, hint := range hints {
+		switch hint {
 		case "", "-":
 			continue
 		case "not_null":
@@ -773,33 +624,33 @@ func fieldConstraints(structField reflect.StructField) (bool, bool, []string, bo
 			primaryKey = true
 		case "on_delete=cascade":
 			if onDeleteSeen {
-				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate on_delete constraint on field %s", structField.Name)
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate on_delete hint on field %s", structField.Name)
 			}
 			onDeleteCascade = true
 			onDeleteSeen = true
 		default:
-			if strings.HasPrefix(constraint, "unique_with=") {
+			if strings.HasPrefix(hint, "unique_with=") {
 				if uniqueWith != nil {
-					return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate unique_with constraint on field %s", structField.Name)
+					return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate unique_with hint on field %s", structField.Name)
 				}
-				columns, err := uniqueWithColumns(strings.TrimPrefix(constraint, "unique_with="))
+				columns, err := uniqueWithColumns(strings.TrimPrefix(hint, "unique_with="))
 				if err != nil {
-					return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: invalid unique_with constraint on field %s: %w", structField.Name, err)
+					return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: invalid unique_with hint on field %s: %w", structField.Name, err)
 				}
 				uniqueWith = columns
 				continue
 			}
-			if !strings.HasPrefix(constraint, "belongs_to=") {
-				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: unsupported constraint %q on field %s", constraint, structField.Name)
+			if !strings.HasPrefix(hint, "belongs_to=") {
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: unsupported hint %q on field %s", hint, structField.Name)
 			}
 			if belongsToTable != "" {
-				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate belongs_to constraint on field %s", structField.Name)
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: duplicate belongs_to hint on field %s", structField.Name)
 			}
 
 			var err error
-			belongsToTable, belongsToColumn, err = belongsToTarget(strings.TrimPrefix(constraint, "belongs_to="))
+			belongsToTable, belongsToColumn, err = belongsToTarget(strings.TrimPrefix(hint, "belongs_to="))
 			if err != nil {
-				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: invalid belongs_to constraint on field %s: %w", structField.Name, err)
+				return false, false, nil, false, false, "", "", false, fmt.Errorf("activeso: invalid belongs_to hint on field %s: %w", structField.Name, err)
 			}
 		}
 	}
@@ -1022,6 +873,11 @@ func (model *model[T]) insertValues(record *T) ([]string, []string, []any, error
 		expressions = append(expressions, expression)
 		arguments = append(arguments, value)
 	}
+	// Stamp both managed timestamps in SQL so the table needs no defaults or triggers.
+	if model.timestamps {
+		columns = append(columns, quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn))
+		expressions = append(expressions, "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP")
+	}
 
 	return columns, expressions, arguments, nil
 }
@@ -1044,6 +900,10 @@ func (model *model[T]) updateValues(record *T) ([]string, []any, error) {
 		assignments = append(assignments, quoteIdentifier(field.column)+" = "+expression)
 		arguments = append(arguments, value)
 	}
+	// Refresh the update timestamp on every Save; creation time is never rewritten.
+	if model.timestamps {
+		assignments = append(assignments, quoteIdentifier(updatedAtColumn)+" = CURRENT_TIMESTAMP")
+	}
 
 	return assignments, arguments, nil
 }
@@ -1060,275 +920,6 @@ func (model *model[T]) fieldForColumn(column string) (field, bool) {
 	}
 
 	return zero, false
-}
-
-// ensureCompositeUniqueIndexesDeclared rejects implicit removal of ActiveSo-managed composite unique indexes.
-func (model *model[T]) ensureCompositeUniqueIndexesDeclared(ctx context.Context, transaction *sql.Tx) error {
-	// Initialize Variables
-	expected := model.compositeUniqueIndexes()
-	statement := "SELECT name FROM sqlite_schema WHERE type = 'index' AND LOWER(tbl_name) = LOWER(?)"
-	prefix := "activeso_" + hex.EncodeToString([]byte(strings.ToLower(model.tableName))) + "_"
-	suffix := "_unique_with"
-	rows, err := transaction.QueryContext(ctx, statement, model.tableName)
-
-	if err != nil {
-		return fmt.Errorf("activeso: inspect composite unique indexes for %s: %w", model.tableName, err)
-	}
-	defer rows.Close()
-
-	// Only treat indexes with ActiveSo's deterministic composite naming scheme as managed.
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("activeso: inspect composite unique indexes for %s: %w", model.tableName, err)
-		}
-		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
-			continue
-		}
-		if _, declared := expected[name]; declared {
-			continue
-		}
-
-		columns, err := model.indexColumns(ctx, transaction, name)
-		if err != nil {
-			return err
-		}
-		arguments := make([]string, 0, len(columns))
-		for _, column := range columns {
-			arguments = append(arguments, fmt.Sprintf("%q", column))
-		}
-		return fmt.Errorf("activeso: cannot automatically remove the composite unique index for %s(%s); call DropUniqueWith(ctx, %s)", model.tableName, strings.Join(columns, ", "), strings.Join(arguments, ", "))
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("activeso: inspect composite unique indexes for %s: %w", model.tableName, err)
-	}
-
-	return nil
-}
-
-// indexColumns returns the ordered columns belonging to an existing SQLite index.
-func (model *model[T]) indexColumns(ctx context.Context, transaction *sql.Tx, name string) ([]string, error) {
-	// Initialize Variables
-	statement := fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(name))
-	rows, err := transaction.QueryContext(ctx, statement)
-	columns := make([]string, 0)
-
-	if err != nil {
-		return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
-	}
-	defer rows.Close()
-
-	// Preserve SQLite's sequence order so callers can reproduce the managed index name.
-	for rows.Next() {
-		var sequence, columnIndex int
-		var column string
-		if err := rows.Scan(&sequence, &columnIndex, &column); err != nil {
-			return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
-		}
-		columns = append(columns, column)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
-	}
-
-	return columns, nil
-}
-
-// createUniqueIndexes creates every single-column and composite unique index declared by the current model.
-func (model *model[T]) createUniqueIndexes(ctx context.Context, transaction *sql.Tx) error {
-	// Initialize Variables
-	fields := model.fields
-	compositeIndexes := model.compositeUniqueIndexes()
-
-	for _, field := range fields {
-		if !field.unique || field.isID {
-			continue
-		}
-
-		statement := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s)", quoteIdentifier(model.uniqueIndexName(field)), quoteIdentifier(model.tableName), quoteIdentifier(field.column))
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("activeso: create unique index for %s.%s: %w", model.tableName, field.column, err)
-		}
-	}
-	for name, fields := range compositeIndexes {
-		columns := make([]string, 0, len(fields))
-		for _, field := range fields {
-			columns = append(columns, quoteIdentifier(field.column))
-		}
-
-		statement := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s (%s)", quoteIdentifier(name), quoteIdentifier(model.tableName), strings.Join(columns, ", "))
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("activeso: create composite unique index for %s: %w", model.tableName, err)
-		}
-	}
-
-	return nil
-}
-
-// createIndexes creates every non-unique index declared by the current model.
-func (model *model[T]) createIndexes(ctx context.Context, transaction *sql.Tx) error {
-	// Initialize Variables
-	fields := model.fields
-
-	for _, field := range fields {
-		if !field.indexed || field.unique || field.isID {
-			continue
-		}
-
-		statement := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", quoteIdentifier(model.indexName(field)), quoteIdentifier(model.tableName), quoteIdentifier(field.column))
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("activeso: create index for %s.%s: %w", model.tableName, field.column, err)
-		}
-	}
-
-	return nil
-}
-
-// createTableStatement builds the idempotent CREATE TABLE statement for the model.
-func (model *model[T]) createTableStatement() (string, error) {
-	// Initialize Variables
-	name := model.tableName
-	statement, err := model.createTableStatementFor(name)
-
-	if err != nil {
-		return "", err
-	}
-
-	return strings.Replace(statement, "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1), nil
-}
-
-// createTableStatementFor builds a CREATE TABLE statement for a supplied table name.
-func (model *model[T]) createTableStatementFor(tableName string) (string, error) {
-	// Initialize Variables
-	definitions := make([]string, 0, len(model.fields)+2)
-
-	for _, field := range model.fields {
-		definition, err := model.columnDefinition(field, true)
-		if err != nil {
-			return "", err
-		}
-		definitions = append(definitions, definition)
-	}
-	// Store UTC timestamps automatically without requiring fields on application models.
-	definitions = append(definitions,
-		quoteIdentifier(createdAtColumn)+" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
-		quoteIdentifier(updatedAtColumn)+" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
-	)
-
-	return fmt.Sprintf("CREATE TABLE %s (%s)", quoteIdentifier(tableName), strings.Join(definitions, ", ")), nil
-}
-
-// createTimestampColumns adds and initializes the managed timestamp columns on an existing table.
-func (model *model[T]) createTimestampColumns(ctx context.Context, transaction *sql.Tx, columns map[string]columnInfo) error {
-	// Initialize Variables
-	missingCreatedAt := false
-	missingUpdatedAt := false
-
-	// SQLite cannot add a column with a non-constant timestamp default, so legacy tables use triggers.
-	if _, found := columns[createdAtColumn]; !found {
-		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT", quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn))
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("activeso: add timestamp column %s to %s: %w", createdAtColumn, model.tableName, err)
-		}
-		missingCreatedAt = true
-	}
-	if _, found := columns[updatedAtColumn]; !found {
-		statement := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT", quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn))
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("activeso: add timestamp column %s to %s: %w", updatedAtColumn, model.tableName, err)
-		}
-		missingUpdatedAt = true
-	}
-	if !missingCreatedAt && !missingUpdatedAt {
-		return nil
-	}
-
-	// Assign creation-time values to rows that existed before timestamp support.
-	statement := fmt.Sprintf("UPDATE %s SET %s = COALESCE(%s, CURRENT_TIMESTAMP), %s = COALESCE(%s, CURRENT_TIMESTAMP)", quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn))
-	if _, err := transaction.ExecContext(ctx, statement); err != nil {
-		return fmt.Errorf("activeso: initialize timestamps for %s: %w", model.tableName, err)
-	}
-
-	return nil
-}
-
-// createTimestampTriggers installs the managed triggers that fill and refresh table timestamps.
-func (model *model[T]) createTimestampTriggers(ctx context.Context, transaction *sql.Tx) error {
-	// Initialize Variables
-	columns, err := model.existingColumns(ctx, transaction)
-	updatedColumns := make([]string, 0, len(columns)-2)
-	insertTrigger := model.timestampTriggerName("insert")
-	updateTrigger := model.timestampTriggerName("update")
-	createdAtTrigger := model.timestampTriggerName("protect_created_at")
-	updatedAtTrigger := model.timestampTriggerName("protect_updated_at")
-
-	if err != nil {
-		return err
-	}
-	for column := range columns {
-		if strings.EqualFold(column, createdAtColumn) || strings.EqualFold(column, updatedAtColumn) {
-			continue
-		}
-		updatedColumns = append(updatedColumns, quoteIdentifier(column))
-	}
-	if len(updatedColumns) == 0 {
-		return nil
-	}
-	// Remove legacy guards as well: SQL timestamp values cannot identify replay versus application writes.
-	for _, trigger := range []string{insertTrigger, updateTrigger, createdAtTrigger, updatedAtTrigger} {
-		statement := "DROP TRIGGER IF EXISTS " + quoteIdentifier(trigger)
-		if _, err := transaction.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("activeso: replace timestamp trigger for %s: %w", model.tableName, err)
-		}
-	}
-
-	// Fill nullable legacy timestamp columns when callers omit them during inserts.
-	insertStatement := fmt.Sprintf("CREATE TRIGGER %s AFTER INSERT ON %s WHEN NEW.%s IS NULL OR NEW.%s IS NULL BEGIN UPDATE %s SET %s = COALESCE(%s, CURRENT_TIMESTAMP), %s = COALESCE(%s, CURRENT_TIMESTAMP) WHERE %s IS NEW.%s; END", quoteIdentifier(insertTrigger), quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(createdAtColumn), quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.idField.column), quoteIdentifier(model.idField.column))
-	if _, err := transaction.ExecContext(ctx, insertStatement); err != nil {
-		return fmt.Errorf("activeso: create timestamp insert trigger for %s: %w", model.tableName, err)
-	}
-
-	// Preserve changed timestamps supplied by row-image replay; ordinary data writes still refresh them.
-	// Restrict to data columns to avoid recursion. Equal supplied timestamps refresh like data-only writes.
-	updateStatement := fmt.Sprintf("CREATE TRIGGER %s AFTER UPDATE OF %s ON %s WHEN NEW.%s IS OLD.%s BEGIN UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s IS NEW.%s; END", quoteIdentifier(updateTrigger), strings.Join(updatedColumns, ", "), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.idField.column), quoteIdentifier(model.idField.column))
-	if _, err := transaction.ExecContext(ctx, updateStatement); err != nil {
-		return fmt.Errorf("activeso: create timestamp update trigger for %s: %w", model.tableName, err)
-	}
-
-	return nil
-}
-
-// timestampTriggerName returns a database-wide stable name for one managed table trigger.
-func (model *model[T]) timestampTriggerName(kind string) string {
-	// Initialize Variables
-	name := strings.ToLower(model.tableName)
-
-	return "activeso_" + hex.EncodeToString([]byte(name)) + "_timestamps_" + kind
-}
-
-// columnDefinition derives a Turso column definition for one model field.
-func (model *model[T]) columnDefinition(field field, includeRequired bool) (string, error) {
-	// Initialize Variables
-	columnType, err := sqlColumnType(field)
-	definition := quoteIdentifier(field.column) + " " + columnType
-
-	if err != nil {
-		return "", err
-	}
-	if field.isID {
-		definition += " PRIMARY KEY"
-	}
-	if includeRequired && field.notNull {
-		definition += " NOT NULL"
-	}
-	if field.belongsToTable != "" {
-		definition += " REFERENCES " + quoteIdentifier(field.belongsToTable) + "(" + quoteIdentifier(field.belongsToColumn) + ")"
-		if field.onDeleteCascade {
-			definition += " ON DELETE CASCADE"
-		}
-	}
-
-	return definition, nil
 }
 
 // sqlColumnType maps supported Go field types to Turso SQL storage types.
@@ -1388,259 +979,6 @@ func sqliteTypeAffinity(columnType string) string {
 	}
 }
 
-// managedUniqueIndexExists reports whether ActiveSo's unique index still exists for field.
-func (model *model[T]) managedUniqueIndexExists(ctx context.Context, transaction *sql.Tx, field field) (bool, error) {
-	// Initialize Variables
-	statement := "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ? AND LOWER(tbl_name) = LOWER(?) LIMIT 1"
-	value := 0
-
-	// Only identify indexes with ActiveSo's deterministic name, never user-managed uniqueness.
-	if err := transaction.QueryRowContext(ctx, statement, model.uniqueIndexName(field), model.tableName).Scan(&value); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("activeso: inspect managed unique index for %s.%s: %w", model.tableName, field.column, err)
-	}
-
-	return true, nil
-}
-
-// existingColumns returns each column's identity metadata from the model's existing table.
-func (model *model[T]) existingColumns(ctx context.Context, transaction *sql.Tx) (map[string]columnInfo, error) {
-	// Initialize Variables
-	statement := fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(model.tableName))
-	rows, err := transaction.QueryContext(ctx, statement)
-	columns := make(map[string]columnInfo)
-	primaryKeyColumns := 0
-
-	if err != nil {
-		return nil, fmt.Errorf("activeso: inspect table %s: %w", model.tableName, err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var index int
-		var name string
-		var columnType string
-		var notNull bool
-		var defaultValue any
-		var primaryKeyPosition int
-		if err := rows.Scan(&index, &name, &columnType, &notNull, &defaultValue, &primaryKeyPosition); err != nil {
-			return nil, fmt.Errorf("activeso: inspect columns for %s: %w", model.tableName, err)
-		}
-		primaryKey := primaryKeyPosition > 0
-		if primaryKey {
-			primaryKeyColumns++
-		}
-		columns[strings.ToLower(name)] = columnInfo{columnType: columnType, notNull: notNull, primaryKey: primaryKey}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("activeso: iterate columns for %s: %w", model.tableName, err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("activeso: close column inspection for %s: %w", model.tableName, err)
-	}
-	if primaryKeyColumns == 1 {
-		for name, column := range columns {
-			if column.primaryKey {
-				column.unique = true
-				columns[name] = column
-			}
-		}
-	}
-
-	uniqueColumns, err := model.uniqueColumns(ctx, transaction)
-	if err != nil {
-		return nil, err
-	}
-	for name := range uniqueColumns {
-		column, found := columns[name]
-		if found {
-			column.unique = true
-			columns[name] = column
-		}
-	}
-
-	return columns, nil
-}
-
-// uniqueColumns returns columns protected by a single-column unique index on the model's table.
-func (model *model[T]) uniqueColumns(ctx context.Context, transaction *sql.Tx) (map[string]bool, error) {
-	// Initialize Variables
-	statement := fmt.Sprintf("PRAGMA index_list(%s)", quoteIdentifier(model.tableName))
-	rows, err := transaction.QueryContext(ctx, statement)
-	indexNames := make([]string, 0)
-	columns := make(map[string]bool)
-
-	if err != nil {
-		return nil, fmt.Errorf("activeso: inspect indexes for %s: %w", model.tableName, err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var sequence int
-		var name string
-		var unique bool
-		var origin string
-		var partial bool
-		if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
-			return nil, fmt.Errorf("activeso: inspect indexes for %s: %w", model.tableName, err)
-		}
-		if unique {
-			indexNames = append(indexNames, name)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("activeso: iterate indexes for %s: %w", model.tableName, err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("activeso: close index inspection for %s: %w", model.tableName, err)
-	}
-
-	for _, name := range indexNames {
-		statement = fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(name))
-		rows, err = transaction.QueryContext(ctx, statement)
-		if err != nil {
-			return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
-		}
-
-		var indexedColumns []string
-		for rows.Next() {
-			var sequence, columnIndex int
-			var columnName string
-			if err := rows.Scan(&sequence, &columnIndex, &columnName); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("activeso: inspect index %s for %s: %w", name, model.tableName, err)
-			}
-			indexedColumns = append(indexedColumns, strings.ToLower(columnName))
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("activeso: iterate index %s for %s: %w", name, model.tableName, err)
-		}
-		if err := rows.Close(); err != nil {
-			return nil, fmt.Errorf("activeso: close index %s for %s: %w", name, model.tableName, err)
-		}
-		if len(indexedColumns) == 1 {
-			columns[indexedColumns[0]] = true
-		}
-	}
-
-	return columns, nil
-}
-
-// uniqueIndexName returns an unambiguous stable name used for one field's unique index.
-func (model *model[T]) uniqueIndexName(field field) string {
-	// Initialize Variables
-	tableName := strings.ToLower(model.tableName)
-	columnName := strings.ToLower(field.column)
-	table := hex.EncodeToString([]byte(tableName))
-	column := hex.EncodeToString([]byte(columnName))
-	name := "activeso_" + table + "_" + column + "_unique"
-
-	return name
-}
-
-// compositeUniqueIndexes returns the deterministic indexes declared by unique_with tags.
-func (model *model[T]) compositeUniqueIndexes() map[string][]field {
-	// Initialize Variables
-	indexes := make(map[string][]field)
-
-	// Preserve struct-field order because it defines the composite index order.
-	for _, owner := range model.fields {
-		if owner.uniqueWith == nil {
-			continue
-		}
-		fields := make([]field, 0, len(owner.uniqueWith)+1)
-		fields = append(fields, owner)
-		for _, column := range owner.uniqueWith {
-			related, _ := model.fieldForColumn(column)
-			fields = append(fields, related)
-		}
-		indexes[model.uniqueWithIndexName(fields)] = fields
-	}
-
-	return indexes
-}
-
-// uniqueWithColumnsForDrop canonicalizes mapped columns and accepts validated model-omitted columns.
-func (model *model[T]) uniqueWithColumnsForDrop(columns []string) ([]string, error) {
-	// Initialize Variables
-	indexColumns := make([]string, 0, len(columns))
-	seen := make(map[string]struct{}, len(columns))
-
-	// Preserve order while allowing a migration to remove an index whose column was omitted from the model.
-	if len(columns) < 2 {
-		return nil, fmt.Errorf("activeso: DropUniqueWith requires at least two columns")
-	}
-	for _, column := range columns {
-		canonicalColumn := column
-		if field, found := model.fieldForColumn(column); found {
-			canonicalColumn = field.column
-		} else if !schemaIdentifier(column) {
-			return nil, fmt.Errorf("activeso: model-omitted column %s must be a simple identifier", column)
-		}
-		key := strings.ToLower(canonicalColumn)
-		if _, exists := seen[key]; exists {
-			return nil, fmt.Errorf("activeso: column %s is listed more than once", column)
-		}
-		seen[key] = struct{}{}
-		indexColumns = append(indexColumns, canonicalColumn)
-	}
-
-	return indexColumns, nil
-}
-
-// declaresUniqueWithColumns reports whether columns are currently protected by a matching unique_with tag.
-func (model *model[T]) declaresUniqueWithColumns(columns []string) bool {
-	// Initialize Variables
-	name := model.uniqueWithIndexNameForColumns(columns)
-	_, declared := model.compositeUniqueIndexes()[name]
-
-	return declared
-}
-
-// uniqueWithIndexName returns an unambiguous stable name for an ordered composite unique index.
-func (model *model[T]) uniqueWithIndexName(fields []field) string {
-	// Initialize Variables
-	columns := make([]string, 0, len(fields))
-
-	// Reuse the column-based name so explicit removals target the same managed index.
-	for _, field := range fields {
-		columns = append(columns, field.column)
-	}
-
-	return model.uniqueWithIndexNameForColumns(columns)
-}
-
-// uniqueWithIndexNameForColumns returns an unambiguous stable name for ordered composite index columns.
-func (model *model[T]) uniqueWithIndexNameForColumns(columns []string) string {
-	// Initialize Variables
-	tableName := strings.ToLower(model.tableName)
-	normalizedColumns := make([]string, 0, len(columns))
-
-	// Use a separator before hex encoding to avoid collisions between column sequences.
-	for _, column := range columns {
-		normalizedColumns = append(normalizedColumns, strings.ToLower(column))
-	}
-	table := hex.EncodeToString([]byte(tableName))
-	columnsKey := hex.EncodeToString([]byte(strings.Join(normalizedColumns, "\x00")))
-
-	return "activeso_" + table + "_" + columnsKey + "_unique_with"
-}
-
-// indexName returns an unambiguous stable name used for one field's ordinary index.
-func (model *model[T]) indexName(field field) string {
-	// Initialize Variables
-	tableName := strings.ToLower(model.tableName)
-	columnName := strings.ToLower(field.column)
-	table := hex.EncodeToString([]byte(tableName))
-	column := hex.EncodeToString([]byte(columnName))
-	name := "activeso_" + table + "_" + column + "_index"
-
-	return name
-}
-
 // uniqueWriteError translates a Turso unique violation to ActiveSo's public uniqueness errors.
 func (model *model[T]) uniqueWriteError(err error) error {
 	// Initialize Variables
@@ -1657,45 +995,6 @@ func (model *model[T]) uniqueWriteError(err error) error {
 	}
 
 	return ErrUnique
-}
-
-// validateUnique rejects duplicate values before a write while the database index remains authoritative.
-func (model *model[T]) validateUnique(ctx context.Context, record *T) error {
-	// Initialize Variables
-	valueOfT := reflect.ValueOf(record).Elem()
-	id, err := model.idValue(record)
-
-	if err != nil {
-		return err
-	}
-
-	for _, field := range model.fields {
-		if !field.unique || field.isID {
-			continue
-		}
-
-		value, expression, err := databaseValue(valueOfT.Field(field.index), field.isVector)
-		if err != nil {
-			return err
-		}
-		if value == nil {
-			continue
-		}
-
-		statement := fmt.Sprintf("SELECT 1 FROM %s WHERE %s = %s AND %s <> ? LIMIT 1", quoteIdentifier(model.tableName), quoteIdentifier(field.column), expression, quoteIdentifier(model.idField.column))
-		var match int
-		err = model.db.QueryRowContext(ctx, statement, value, id).Scan(&match)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("activeso: validate %s.%s uniqueness: %w", model.tableName, field.column, err)
-		}
-
-		return UniqueError{Field: field.column}
-	}
-
-	return nil
 }
 
 // databaseValue converts a reflected field into a database/sql argument and SQL expression.
@@ -1756,7 +1055,9 @@ func (model *model[T]) selectColumns() []string {
 		}
 		columns = append(columns, column)
 	}
-	columns = append(columns, quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn))
+	if model.timestamps {
+		columns = append(columns, quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn))
+	}
 
 	return columns
 }
@@ -1781,7 +1082,7 @@ func nullableScalar(typeOfT reflect.Type) bool {
 func (model *model[T]) scan(rows *sql.Rows, record *T) error {
 	// Initialize Variables
 	values := make([]any, len(model.fields))
-	destinations := make([]any, len(model.fields)+2)
+	destinations := make([]any, len(model.fields), len(model.fields)+2)
 	nullableStrings := make([]sql.NullString, len(model.fields))
 	createdAt := sql.NullString{}
 	updatedAt := sql.NullString{}
@@ -1799,8 +1100,9 @@ func (model *model[T]) scan(rows *sql.Rows, record *T) error {
 		}
 		destinations[index] = valueOfT.Field(field.index).Addr().Interface()
 	}
-	destinations[len(model.fields)] = &createdAt
-	destinations[len(model.fields)+1] = &updatedAt
+	if model.timestamps {
+		destinations = append(destinations, &createdAt, &updatedAt)
+	}
 
 	if err := rows.Scan(destinations...); err != nil {
 		return fmt.Errorf("activeso: scan %s: %w", model.tableName, err)
@@ -1820,14 +1122,16 @@ func (model *model[T]) scan(rows *sql.Rows, record *T) error {
 			valueOfT.Field(field.index).SetString(nullableStrings[index].String)
 		}
 	}
-	if err := assignRecordTimestamps(recordValue, createdAt, updatedAt); err != nil {
-		return err
+	if model.timestamps {
+		if err := assignRecordTimestamps(recordValue, createdAt, updatedAt); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-// refreshTimestamps loads the managed timestamp values after an ActiveSo write.
+// refreshTimestamps loads the managed timestamp values after an ActiveSo write when the timestamps hint is set.
 func (model *model[T]) refreshTimestamps(ctx context.Context, record *T) error {
 	// Initialize Variables
 	createdAt := sql.NullString{}
@@ -1836,11 +1140,14 @@ func (model *model[T]) refreshTimestamps(ctx context.Context, record *T) error {
 	statement := fmt.Sprintf("SELECT %s, %s FROM %s WHERE %s = ?", quoteIdentifier(createdAtColumn), quoteIdentifier(updatedAtColumn), quoteIdentifier(model.tableName), quoteIdentifier(model.idField.column))
 	recordValue := reflect.ValueOf(record).Elem().FieldByName("Record").Addr().Interface().(*Record)
 
+	if !model.timestamps {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	if err := model.db.QueryRowContext(ctx, statement, id).Scan(&createdAt, &updatedAt); err != nil {
-		return fmt.Errorf("activeso: load timestamps for %s: %w", model.tableName, err)
+		return fmt.Errorf("activeso: load timestamps for %s; the timestamps hint expects columns %s and %s: %w", model.tableName, createdAtColumn, updatedAtColumn, err)
 	}
 
 	return assignRecordTimestamps(recordValue, createdAt, updatedAt)
@@ -1881,5 +1188,5 @@ func timestampValue(value sql.NullString) (time.Time, error) {
 		}
 	}
 
-	return zero, fmt.Errorf("activeso: parse timestamp %q", value.String)
+	return zero, fmt.Errorf("activeso: parse timestamp %q; the timestamps hint expects UTC text in columns %s and %s", value.String, createdAtColumn, updatedAtColumn)
 }

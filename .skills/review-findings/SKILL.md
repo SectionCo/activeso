@@ -2,13 +2,9 @@
 
 Verified against the working tree and pinned Turso v0.7.2 on 2026-09-18 using focused Go tests in a temporary repository copy. These describe current limitations, not desired behavior. Update or remove each entry when fixed.
 
-## Table rebuild scope — resolved
+## Table rebuilds and nullable additions — removed in 2.0
 
-Column migrations now edit the existing database definition only at the named target and preserve unrelated columns and indexes. See `../targeted-migrations/SKILL.md` for the supported behavior and limitations.
-
-## Nullable additions and reads — resolved for plain strings
-
-Plain Go string fields scan through `sql.NullString`; SQL `NULL` becomes `""`. Existing rows remain readable after `AutoMigrate` adds a nullable string field. This intentionally collapses the distinction between NULL and an empty string, and saving the record writes an empty string. Models can instead use `sql.NullString`, which maps to TEXT and preserves its `Valid` flag. Pointer fields remain unsupported for automatic schema generation.
+ActiveSo 2.0 no longer migrates schemas, so the table-rebuild and additive-migration findings no longer apply. Plain Go strings and numbers still read SQL `NULL` as zero values, and `sql.NullString` still preserves `Valid`.
 
 ## Bound record identity — resolved
 

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v5"
-	"github.com/sectionco/activeso"
+	"github.com/sectionco/activeso/v2"
 )
 
 // TestExampleDatabaseLifecycle verifies the example model's persistence workflow with the Turso engine.
@@ -31,11 +31,19 @@ func TestExampleDatabaseLifecycle(t *testing.T) {
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := userModel.AutoMigrate(ctx); err != nil {
+	for _, statement := range strings.Split(usersSchema, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := userModel.Verify(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// Create and read a user with database-generated timestamps.
+	// Create and read a user with ActiveSo-managed timestamps.
 	user, err = userModel.Create(ctx, User{Email: "example@null.live"})
 	if err != nil {
 		t.Fatal(err)

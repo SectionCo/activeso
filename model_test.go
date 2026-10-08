@@ -12,35 +12,120 @@ import (
 	_ "turso.tech/database/tursogo"
 )
 
-type testUser struct {
-	Record
+type User struct {
+	Record `activeso:"timestamps"`
 
 	ID        string   `db:"id"`
 	Email     string   `db:"email" activeso:"not_null,unique"`
 	Embedding Vector32 `db:"embedding"`
 }
 
-type foreignKeyRegion struct {
+type Region struct {
 	Record
 
 	ID   string `db:"id"`
 	Name string `db:"name"`
 }
 
-type foreignKeyCity struct {
+type City struct {
 	Record
 
 	ID       string `db:"id"`
-	Name     string `db:"name"`
+	Name     string `db:"name" activeso:"not_null,index"`
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(id)"`
 }
 
-type foreignKeyCascadeCity struct {
+type CascadeCity struct {
 	Record
 
 	ID       string `db:"id"`
-	Name     string `db:"name"`
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(id),on_delete=cascade"`
+}
+
+type Membership struct {
+	Record
+
+	ID             string `db:"id"`
+	CustomerID     string `db:"customer_id" activeso:"not_null,unique_with=organization_id"`
+	OrganizationID string `db:"organization_id" activeso:"not_null"`
+}
+
+type Note struct {
+	Record `activeso:"timestamps"`
+
+	ID string `db:"id"`
+}
+
+type Plain struct {
+	Record
+
+	ID   string `db:"id"`
+	Name string `db:"name"`
+}
+
+type Stamped struct {
+	Record `activeso:"timestamps"`
+
+	ID   string `db:"id"`
+	Name string `db:"name"`
+}
+
+type Profile struct {
+	Record
+
+	ID       string         `db:"id"`
+	Nickname sql.NullString `db:"nickname"`
+}
+
+type Account struct {
+	Record
+
+	ID      string          `db:"id"`
+	Count   sql.NullInt64   `db:"count"`
+	Score   sql.NullFloat64 `db:"score"`
+	Enabled sql.NullBool    `db:"enabled"`
+	Visits  int             `db:"visits"`
+}
+
+type Device struct {
+	Record
+
+	ExternalID string `db:"external_id" activeso:"primary_key"`
+	Label      string `db:"label"`
+}
+
+type untaggedField struct {
+	Record
+
+	ID    string `db:"id"`
+	Email string
+}
+
+type skippedField struct {
+	Record
+
+	ID    string `db:"id"`
+	Cache string `db:"-"`
+}
+
+type unsupportedRecordHint struct {
+	Record `activeso:"audit"`
+
+	ID string `db:"id"`
+}
+
+type unsupportedFieldHint struct {
+	Record
+
+	ID    string `db:"id"`
+	Email string `db:"email" activeso:"fast"`
+}
+
+type reservedTimestampColumn struct {
+	Record `activeso:"timestamps"`
+
+	ID        string `db:"id"`
+	CreatedOn string `db:"created_at"`
 }
 
 type invalidCascadeWithoutForeignKey struct {
@@ -50,159 +135,11 @@ type invalidCascadeWithoutForeignKey struct {
 	RegionID string `db:"region_id" activeso:"on_delete=cascade"`
 }
 
-type foreignKeySharedPrimaryKeyCity struct {
-	Record
-
-	RegionID string `db:"region_id" activeso:"primary_key,belongs_to=regions(id)"`
-	Name     string `db:"name"`
-}
-
-type indexedCity struct {
-	Record
-
-	ID   string `db:"id"`
-	Name string `db:"name" activeso:"not_null,index"`
-}
-
-type compositeMembershipV1 struct {
-	Record
-
-	ID             string `db:"id"`
-	CustomerID     string `db:"customer_id" activeso:"not_null,unique_with=organization_id"`
-	OrganizationID string `db:"organization_id" activeso:"not_null"`
-}
-
-type compositeMembershipV2 struct {
-	Record
-
-	ID         string `db:"id"`
-	CustomerID string `db:"customer_id" activeso:"not_null"`
-}
-
 type invalidForeignKeyTarget struct {
 	Record
 
 	ID       string `db:"id"`
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(id); DROP TABLE users"`
-}
-
-type migrationUserV1 struct {
-	Record
-
-	ID    string `db:"id"`
-	Email string `db:"email"`
-}
-
-type migrationUserV2 struct {
-	Record
-
-	ID       string `db:"id"`
-	Email    string `db:"email"`
-	Nickname string `db:"nickname"`
-}
-
-type migrationUserV3 struct {
-	Record
-
-	ID       string `db:"id"`
-	Email    string `db:"email"`
-	Nickname string `db:"nickname"`
-	Required string `db:"required" activeso:"not_null"`
-}
-
-type migrationUserRequiredEmail struct {
-	Record
-
-	ID    string `db:"id"`
-	Email string `db:"email" activeso:"not_null"`
-}
-
-type migrationUserIntegerEmail struct {
-	Record
-
-	ID    string `db:"id"`
-	Email int    `db:"email"`
-}
-
-type migrationUserIntegerID struct {
-	Record
-
-	ID    int    `db:"id"`
-	Email string `db:"email"`
-}
-
-type migrationUserIntegerEmailV2 struct {
-	Record
-
-	ID       string `db:"id"`
-	Email    int    `db:"email"`
-	Nickname string `db:"nickname"`
-}
-
-type migrationUserMovedID struct {
-	Record
-
-	NewID string `db:"new_id" activeso:"primary_key"`
-	Email string `db:"email"`
-}
-
-type migrationUserRequiredNickname struct {
-	Record
-
-	ID       string `db:"id"`
-	Email    string `db:"email"`
-	Nickname string `db:"nickname" activeso:"not_null"`
-}
-
-type nullableStringUser struct {
-	Record
-
-	ID       string         `db:"id"`
-	Email    string         `db:"email"`
-	Nickname sql.NullString `db:"nickname"`
-}
-
-type nullableWrapperUser struct {
-	Record
-
-	ID      string          `db:"id"`
-	Count   sql.NullInt64   `db:"count"`
-	Score   sql.NullFloat64 `db:"score"`
-	Enabled sql.NullBool    `db:"enabled"`
-}
-
-type idOnlyUser struct {
-	Record
-
-	ID string `db:"id"`
-}
-
-type numericMigrationV1 struct {
-	Record
-
-	ID string `db:"id"`
-}
-
-type numericMigrationV2 struct {
-	Record
-
-	ID      string  `db:"id"`
-	Count   int     `db:"count"`
-	Score   float64 `db:"score"`
-	Enabled bool    `db:"enabled"`
-}
-
-type explicitPrimaryKeyUser struct {
-	Record
-
-	ExternalID string `db:"external_id" activeso:"primary_key"`
-	Email      string `db:"email"`
-}
-
-type requiredPrimaryKeyUser struct {
-	Record
-
-	ExternalID string `db:"external_id" activeso:"not_null,primary_key"`
 }
 
 type duplicateColumnUser struct {
@@ -245,286 +182,49 @@ type uint64PrimaryKeyUser struct {
 	ID uint64 `db:"id"`
 }
 
-type uniqueCollisionFirst struct {
+type noPrimaryKeyUser struct {
 	Record
 
-	ID  string `db:"id"`
-	Baz string `db:"baz" activeso:"unique"`
-}
-
-type uniqueCollisionSecond struct {
-	Record
-
-	ID     string `db:"id"`
-	BarBaz string `db:"bar_baz" activeso:"unique"`
-}
-
-type caseColumnUser struct {
-	Record
-
-	ID    string `db:"id"`
 	Email string `db:"email"`
 }
 
-type caseUniqueUserV1 struct {
-	Record
-
-	ID    string `db:"id"`
-	Email string `db:"email" activeso:"unique"`
-}
-
-type caseUniqueUserV2 struct {
-	Record
-
-	ID    string `db:"ID"`
-	Email string `db:"EMAIL" activeso:"unique"`
-}
-
-type caseUniqueUserV3 struct {
-	Record
-
-	ID    string `db:"id"`
-	Email string `db:"EMAIL"`
-}
-
-// TableName maps testUser to the temporary users table.
-func (testUser) TableName() string {
-	// Initialize Variables
-	name := "users"
-
-	return name
-}
-
-// TableName maps foreignKeyRegion to the regions table used by foreign-key tests.
-func (foreignKeyRegion) TableName() string {
-	// Initialize Variables
-	name := "regions"
-
-	return name
-}
-
-// TableName maps foreignKeyCity to the cities table used by foreign-key tests.
-func (foreignKeyCity) TableName() string {
+// TableName maps CascadeCity to the shared cities table used by foreign-key tests.
+func (CascadeCity) TableName() string {
 	// Initialize Variables
 	name := "cities"
 
 	return name
 }
 
-// TableName maps indexedCity to the cities table used by ordinary-index tests.
-func (indexedCity) TableName() string {
+// TableName maps Stamped to the same table as Plain so one table serves both timestamp modes.
+func (Stamped) TableName() string {
 	// Initialize Variables
-	name := "indexed_cities"
+	name := "plains"
 
 	return name
 }
 
-// TableName maps compositeMembershipV1 to the shared membership test table.
-func (compositeMembershipV1) TableName() string {
-	// Initialize Variables
-	name := "composite_memberships"
-
-	return name
-}
-
-// TableName maps compositeMembershipV2 to the shared membership test table.
-func (compositeMembershipV2) TableName() string {
-	// Initialize Variables
-	name := "COMPOSITE_MEMBERSHIPS"
-
-	return name
-}
-
-// TableName maps migrationUserV1 to the shared migration test table.
-func (migrationUserV1) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserV2 to the shared migration test table.
-func (migrationUserV2) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserV3 to the shared migration test table.
-func (migrationUserV3) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserRequiredEmail to the shared migration test table.
-func (migrationUserRequiredEmail) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserIntegerEmail to the shared migration test table.
-func (migrationUserIntegerEmail) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserIntegerID to the shared migration test table.
-func (migrationUserIntegerID) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserIntegerEmailV2 to the shared migration test table.
-func (migrationUserIntegerEmailV2) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserRequiredNickname to the shared migration test table.
-func (migrationUserRequiredNickname) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps migrationUserMovedID to the shared migration test table.
-func (migrationUserMovedID) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps nullableStringUser to the shared migration test table.
-func (nullableStringUser) TableName() string {
-	// Initialize Variables
-	name := "migration_users"
-
-	return name
-}
-
-// TableName maps nullableWrapperUser to its temporary users table.
-func (nullableWrapperUser) TableName() string {
-	// Initialize Variables
-	name := "nullable_wrapper_users"
-
-	return name
-}
-
-// TableName maps idOnlyUser to the temporary ID-only users table.
-func (idOnlyUser) TableName() string {
-	// Initialize Variables
-	name := "id_only_users"
-
-	return name
-}
-
-// TableName maps numeric migration models to their shared temporary table.
-func (numericMigrationV1) TableName() string {
-	// Initialize Variables
-	name := "numeric_migration_users"
-
-	return name
-}
-
-// TableName maps numeric migration models to their shared temporary table.
-func (numericMigrationV2) TableName() string {
-	// Initialize Variables
-	name := "numeric_migration_users"
-
-	return name
-}
-
-// TableName maps explicitPrimaryKeyUser to its temporary users table.
-func (explicitPrimaryKeyUser) TableName() string {
-	// Initialize Variables
-	name := "explicit_primary_key_users"
-
-	return name
-}
-
-// TableName maps requiredPrimaryKeyUser to its temporary users table.
-func (requiredPrimaryKeyUser) TableName() string {
-	// Initialize Variables
-	name := "required_primary_key_users"
-
-	return name
-}
-
-// TableName maps the first collision model to its deliberately ambiguous legacy table name.
-func (uniqueCollisionFirst) TableName() string {
-	// Initialize Variables
-	name := "foo_bar"
-
-	return name
-}
-
-// TableName maps the second collision model to its deliberately ambiguous legacy table name.
-func (uniqueCollisionSecond) TableName() string {
-	// Initialize Variables
-	name := "foo"
-
-	return name
-}
-
-// TableName maps caseColumnUser to its temporary case-sensitive spelling test table.
-func (caseColumnUser) TableName() string {
-	// Initialize Variables
-	name := "case_column_users"
-
-	return name
-}
-
-// TableName maps the first unique-index spelling to its temporary users table.
-func (caseUniqueUserV1) TableName() string {
-	// Initialize Variables
-	name := "case_unique_users"
-
-	return name
-}
-
-// TableName maps the second unique-index spelling to its temporary users table.
-func (caseUniqueUserV2) TableName() string {
-	// Initialize Variables
-	name := "CASE_UNIQUE_USERS"
-
-	return name
-}
-
-// TableName maps the unique-index removal spelling to its temporary users table.
-func (caseUniqueUserV3) TableName() string {
-	// Initialize Variables
-	name := "CASE_UNIQUE_USERS"
-
-	return name
-}
+const usersSchema = `CREATE TABLE users (
+	id TEXT PRIMARY KEY,
+	email TEXT NOT NULL,
+	embedding BLOB,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX users_email_unique ON users (email);`
 
 // TestModelLifecycle verifies create, query, update, delete, and vector persistence with Turso.
 func TestModelLifecycle(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	userModel := Model[testUser](db)
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
 	inputVector := Vector32{0.12, -0.08, 0.63}
 
-	if err := userModel.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
+	execStatements(t, db, usersSchema)
 
 	// Create binds a generated-ID record that supports instance persistence methods.
-	created, err := userModel.Create(ctx, testUser{Email: "hello@null.live", Embedding: inputVector})
+	created, err := userModel.Create(ctx, User{Email: "hello@null.live", Embedding: inputVector})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -546,15 +246,15 @@ func TestModelLifecycle(t *testing.T) {
 	if !reflect.DeepEqual(found.Embedding, inputVector) {
 		t.Fatalf("Find() embedding = %#v, want %#v", found.Embedding, inputVector)
 	}
+	if found.CreatedAt.IsZero() || found.UpdatedAt.IsZero() {
+		t.Fatalf("Find() timestamps = %v, %v", found.CreatedAt, found.UpdatedAt)
+	}
 	matchingByVector, err := userModel.FindBy(ctx, "embedding", inputVector)
 	if err != nil {
 		t.Fatalf("FindBy() vector error = %v", err)
 	}
 	if len(matchingByVector) != 1 || matchingByVector[0].ID != created.ID {
 		t.Fatalf("FindBy() vector = %#v, want created user", matchingByVector)
-	}
-	if found.CreatedAt.IsZero() || found.UpdatedAt.IsZero() {
-		t.Fatalf("Find() timestamps = %v, %v", found.CreatedAt, found.UpdatedAt)
 	}
 
 	// Vector predicates and nearest-neighbor ordering use encoded Vector32 query arguments.
@@ -565,7 +265,6 @@ func TestModelLifecycle(t *testing.T) {
 	if len(matchingVectors) != 1 || matchingVectors[0].ID != created.ID {
 		t.Fatalf("Where() vector search = %#v, want created user", matchingVectors)
 	}
-
 	nearest, err := userModel.Nearest("embedding", inputVector).First(ctx)
 	if err != nil {
 		t.Fatalf("Nearest().First() error = %v", err)
@@ -586,18 +285,13 @@ func TestModelLifecycle(t *testing.T) {
 	if err := found.Save(ctx); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	if found.UpdatedAt.IsZero() {
-		t.Fatal("Save() did not refresh UpdatedAt")
-	}
-
-	matching, err := userModel.Where("email = ?", "updated@null.live").All(ctx)
+	matching, err := userModel.Where("email = ?", "updated@null.live").Limit(5).All(ctx)
 	if err != nil {
 		t.Fatalf("Where().All() error = %v", err)
 	}
 	if len(matching) != 1 || matching[0].ID != found.ID {
 		t.Fatalf("Where().All() = %#v, want one matching user", matching)
 	}
-
 	allUsers, err := userModel.All(ctx)
 	if err != nil {
 		t.Fatalf("All() error = %v", err)
@@ -610,399 +304,166 @@ func TestModelLifecycle(t *testing.T) {
 	if err := found.Delete(ctx); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
-	_, err = userModel.Find(ctx, found.ID)
-	if !errors.Is(err, ErrNotFound) {
+	if _, err = userModel.Find(ctx, found.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Find() after Delete() error = %v, want ErrNotFound", err)
+	}
+	if _, err = userModel.Where("email = ?", "missing").First(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("First() without matches error = %v, want ErrNotFound", err)
 	}
 }
 
-// TestAutoMigrateIndexAndFindBy creates ordinary indexes and queries mapped columns safely.
-func TestAutoMigrateIndexAndFindBy(t *testing.T) {
+// TestTimestampsAreOptIn verifies models without the timestamps hint never touch created_at or updated_at.
+func TestTimestampsAreOptIn(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[indexedCity](db)
-	var indexCount int
+	db := openTestDatabase(t)
+	plainModel := Model[Plain](db)
 
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
+	execStatements(t, db, `CREATE TABLE plains (id TEXT PRIMARY KEY, name TEXT)`)
+
+	created, err := plainModel.Create(ctx, Plain{Name: "plain"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", model.indexName(model.fields[1])).Scan(&indexCount); err != nil {
-		t.Fatal(err)
+	created.Name = "renamed"
+	if err := created.Save(ctx); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
-	if indexCount != 1 {
-		t.Fatalf("managed index count = %d, want 1", indexCount)
+	found, err := plainModel.Find(ctx, created.ID)
+	if err != nil || found.Name != "renamed" {
+		t.Fatalf("Find() = %#v, error = %v", found, err)
 	}
-	if _, err := model.Create(ctx, indexedCity{ID: "portland", Name: "Portland"}); err != nil {
-		t.Fatal(err)
+	if !found.CreatedAt.IsZero() || !found.UpdatedAt.IsZero() {
+		t.Fatalf("timestamps = %v, %v, want zero without the hint", found.CreatedAt, found.UpdatedAt)
 	}
-	if _, err := model.Create(ctx, indexedCity{ID: "portland-maine", Name: "Portland"}); err != nil {
-		t.Fatal(err)
+}
+
+// TestTimestampsNameMissingColumns verifies a timestamps hint explains the columns it expects.
+func TestTimestampsNameMissingColumns(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	stampedModel := Model[Stamped](db)
+
+	execStatements(t, db, `CREATE TABLE plains (id TEXT PRIMARY KEY, name TEXT)`)
+
+	_, err := stampedModel.Create(ctx, Stamped{Name: "stamped"})
+	if !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("Create() error = %v, want ErrSchemaMismatch", err)
 	}
-	cities, err := model.FindBy(ctx, "name", "Portland")
+	if !strings.Contains(err.Error(), "created_at") || !strings.Contains(err.Error(), "updated_at") {
+		t.Fatalf("Create() error = %q, want both timestamp column names", err)
+	}
+}
+
+// TestTimestampsRefreshOnSave verifies Save advances updated_at while created_at stays fixed.
+func TestTimestampsRefreshOnSave(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+
+	execStatements(t, db, usersSchema)
+
+	created, err := userModel.Create(ctx, User{Email: "hello@null.live"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cities) != 2 {
-		t.Fatalf("FindBy() returned %d cities, want 2", len(cities))
+	// Backdate both columns so the refreshed value is distinguishable within one second.
+	if _, err := db.ExecContext(ctx, "UPDATE users SET created_at = '2000-01-01 00:00:00', updated_at = '2000-01-01 00:00:00'"); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := model.FindBy(ctx, "missing", "Portland"); err == nil {
+
+	created.Email = "updated@null.live"
+	if err := created.Save(ctx); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if created.CreatedAt.Year() != 2000 {
+		t.Fatalf("CreatedAt = %v, want the stored creation time", created.CreatedAt)
+	}
+	if created.UpdatedAt.Year() == 2000 {
+		t.Fatalf("UpdatedAt = %v, want a refreshed time", created.UpdatedAt)
+	}
+}
+
+// TestTimestampsOnIDOnlyModel verifies a model with only an ID still updates its timestamp on Save.
+func TestTimestampsOnIDOnlyModel(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	noteModel := Model[Note](db)
+
+	execStatements(t, db, `CREATE TABLE notes (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`)
+
+	note, err := noteModel.Create(ctx, Note{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := note.Save(ctx); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := note.Delete(ctx); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err := note.Save(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Save() after Delete() error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestFindByUsesMappedColumnsOnly verifies FindBy rejects columns the model does not map.
+func TestFindByUsesMappedColumnsOnly(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	cityModel := Model[City](db)
+
+	execStatements(t, db, `CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT NOT NULL, region_id TEXT);
+CREATE INDEX cities_name ON cities (name);`)
+
+	for _, id := range []string{"portland", "portland-maine"} {
+		if _, err := cityModel.Create(ctx, City{ID: id, Name: "Portland"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cities, err := cityModel.FindBy(ctx, "name", "Portland")
+	if err != nil || len(cities) != 2 {
+		t.Fatalf("FindBy() = %d cities, error = %v, want 2", len(cities), err)
+	}
+	if _, err := cityModel.FindBy(ctx, "missing", "Portland"); err == nil {
 		t.Fatal("FindBy() accepted an undefined column")
 	}
 }
 
-// TestCompositeUniqueWith creates, enforces, and explicitly removes composite unique indexes.
-func TestCompositeUniqueWith(t *testing.T) {
+// TestUniqueViolationsMapToErrUnique verifies database unique-index failures become UniqueError.
+func TestUniqueViolationsMapToErrUnique(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[compositeMembershipV1](db)
-	removedModel := Model[compositeMembershipV2](db)
-	fields := []field{model.fields[1], model.fields[2]}
-	indexName := model.uniqueWithIndexName(fields)
-	var indexCount int
-
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexCount); err != nil {
-		t.Fatal(err)
-	}
-	if indexCount != 1 {
-		t.Fatalf("composite unique index count = %d, want 1", indexCount)
-	}
-	if _, err := model.Create(ctx, compositeMembershipV1{ID: "one", CustomerID: "customer-a", OrganizationID: "organization-a"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := model.Create(ctx, compositeMembershipV1{ID: "two", CustomerID: "customer-a", OrganizationID: "organization-b"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := model.Create(ctx, compositeMembershipV1{ID: "three", CustomerID: "customer-b", OrganizationID: "organization-a"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := model.Create(ctx, compositeMembershipV1{ID: "four", CustomerID: "customer-a", OrganizationID: "organization-a"}); !errors.Is(err, ErrUnique) {
-		t.Fatalf("duplicate composite membership error = %v, want ErrUnique", err)
-	}
-
-	// Removing the tag requires an explicit index migration before AutoMigrate can proceed.
-	if err := removedModel.AutoMigrate(ctx); err == nil || !strings.Contains(err.Error(), "DropUniqueWith") {
-		t.Fatalf("AutoMigrate() after unique_with removal error = %v, want DropUniqueWith guidance", err)
-	}
-	if err := removedModel.DropUniqueWith(ctx, "customer_id", "organization_id"); err != nil {
-		t.Fatal(err)
-	}
-	if err := removedModel.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexCount); err != nil {
-		t.Fatal(err)
-	}
-	if indexCount != 0 {
-		t.Fatalf("composite unique index count after removal = %d, want 0", indexCount)
-	}
-}
-
-// TestAutoMigrateForeignKey creates and enforces belongs_to foreign-key constraints.
-func TestAutoMigrateForeignKey(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	regionModel := Model[foreignKeyRegion](db)
-	cityModel := Model[foreignKeyCity](db)
-	var table, from, to, action string
-
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := regionModel.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := cityModel.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT \"table\", \"from\", \"to\", \"on_delete\" FROM pragma_foreign_key_list('cities')").Scan(&table, &from, &to, &action); err != nil {
-		t.Fatal(err)
-	}
-	if table != "regions" || from != "region_id" || to != "id" {
-		t.Fatalf("foreign key = %s(%s) -> %s, want region_id -> regions(id)", table, from, to)
-	}
-	if action != "NO ACTION" {
-		t.Fatalf("on_delete = %q, want NO ACTION", action)
-	}
-	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon", Name: "Oregon"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cityModel.Create(ctx, foreignKeyCity{ID: "portland", Name: "Portland", RegionID: "oregon"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cityModel.Create(ctx, foreignKeyCity{ID: "unknown", Name: "Unknown", RegionID: "missing"}); err == nil {
-		t.Fatal("Create() accepted a missing belongs_to target")
-	}
-}
-
-// TestAutoMigrateCascadeForeignKey verifies a tagged child is deleted with its parent.
-func TestAutoMigrateCascadeForeignKey(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	regionModel := Model[foreignKeyRegion](db)
-	cityModel := Model[foreignKeyCascadeCity](db)
-	var action string
-	var childCount int
-
-	// Keep foreign-key enforcement enabled on the connection used for migrations and writes.
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := regionModel.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := cityModel.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT \"on_delete\" FROM pragma_foreign_key_list(?)", cityModel.tableName).Scan(&action); err != nil {
-		t.Fatal(err)
-	}
-	if action != "CASCADE" {
-		t.Fatalf("on_delete = %q, want CASCADE", action)
-	}
-	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cityModel.Create(ctx, foreignKeyCascadeCity{ID: "portland", RegionID: "oregon"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, "DELETE FROM regions WHERE id = ?", "oregon"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM "+quoteIdentifier(cityModel.tableName)).Scan(&childCount); err != nil {
-		t.Fatal(err)
-	}
-	if childCount != 0 {
-		t.Fatalf("child count after parent deletion = %d, want 0", childCount)
-	}
-}
-
-// TestAutoMigrateSharedPrimaryKeyForeignKey enforces belongs_to constraints on explicitly tagged primary keys.
-func TestAutoMigrateSharedPrimaryKeyForeignKey(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	regionModel := Model[foreignKeyRegion](db)
-	cityModel := Model[foreignKeySharedPrimaryKeyCity](db)
-	var table, from, to string
-
-	db.SetMaxOpenConns(1)
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := regionModel.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := cityModel.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT \"table\", \"from\", \"to\" FROM pragma_foreign_key_list(?)", cityModel.tableName).Scan(&table, &from, &to); err != nil {
-		t.Fatal(err)
-	}
-	if table != "regions" || from != "region_id" || to != "id" {
-		t.Fatalf("foreign key = %s(%s) -> %s, want region_id -> regions(id)", table, from, to)
-	}
-	if _, err := regionModel.Create(ctx, foreignKeyRegion{ID: "oregon", Name: "Oregon"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cityModel.Create(ctx, foreignKeySharedPrimaryKeyCity{RegionID: "oregon", Name: "Portland"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cityModel.Create(ctx, foreignKeySharedPrimaryKeyCity{RegionID: "missing", Name: "Unknown"}); err == nil {
-		t.Fatal("Create() accepted a missing shared primary-key belongs_to target")
-	}
-}
-
-// TestModelRejectsInvalidForeignKeyTarget rejects malformed belongs_to targets before migration.
-func TestModelRejectsInvalidForeignKeyTarget(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-
-	assertModelPanics(t, func() { Model[invalidForeignKeyTarget](db) })
-}
-
-// TestModelRejectsCascadeWithoutForeignKey requires on_delete to modify a belongs_to tag.
-func TestModelRejectsCascadeWithoutForeignKey(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-
-	assertModelPanics(t, func() { Model[invalidCascadeWithoutForeignKey](db) })
-}
-
-// TestAutoMigrateConstraints verifies automatic schema creation and unique-value validation.
-func TestAutoMigrateConstraints(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	userModel := Model[testUser](db)
-	first := testUser{Email: "unique@null.live"}
-	second := testUser{Email: "unique@null.live"}
-
-	if err := userModel.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	if _, err := userModel.Create(ctx, first); err != nil {
-		t.Fatalf("first Create() error = %v", err)
-	}
-	if _, err := userModel.Create(ctx, second); !errors.Is(err, ErrUnique) {
-		t.Fatalf("second Create() error = %v, want ErrUnique", err)
-	}
-
-	_, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES (?, ?)", "database-duplicate", first.Email)
-	if err == nil {
-		t.Fatal("Turso accepted a duplicate value without enforcing the unique index")
-	}
-}
-
-// TestAutoMigrateTimestamps verifies fresh tables receive timestamp defaults and refresh triggers.
-func TestAutoMigrateTimestamps(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[testUser](db)
-	var createdAt, updatedAt, createdDefault, updatedDefault string
-	var user *testUser
-	var err error
-
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, `SELECT dflt_value FROM pragma_table_info('users') WHERE name = 'activeso_created_at'`).Scan(&createdDefault); err != nil || createdDefault != "CURRENT_TIMESTAMP" {
-		t.Fatalf("created timestamp default = %q, error = %v", createdDefault, err)
-	}
-	if err := db.QueryRowContext(ctx, `SELECT dflt_value FROM pragma_table_info('users') WHERE name = 'activeso_updated_at'`).Scan(&updatedDefault); err != nil || updatedDefault != "CURRENT_TIMESTAMP" {
-		t.Fatalf("updated timestamp default = %q, error = %v", updatedDefault, err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email, embedding) VALUES ('timestamped', 'timestamped@example.com', vector32('[1, 0]'))"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&createdAt, &updatedAt); err != nil || createdAt == "" || updatedAt == "" {
-		t.Fatalf("insert timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
-	}
-
-	// Timestamp-only replacements are allowed for replay without generating a new timestamp.
-	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_created_at = '2000-01-01 00:00:00', activeso_updated_at = '2001-01-01 00:00:00' WHERE id = 'timestamped'"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&createdAt, &updatedAt); err != nil || createdAt != "2000-01-01 00:00:00" || updatedAt != "2001-01-01 00:00:00" {
-		t.Fatalf("supplied timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
-	}
-
-	// A normal data update refreshes updated_at while leaving created_at alone.
-	if _, err := db.ExecContext(ctx, "UPDATE users SET email = 'changed@example.com' WHERE id = 'timestamped'"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'timestamped'").Scan(&createdAt, &updatedAt); err != nil || createdAt != "2000-01-01 00:00:00" || updatedAt == "" || updatedAt == "2001-01-01 00:00:00" {
-		t.Fatalf("updated timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
-	}
-
-	// Save ignores Go timestamp assignments and reloads the database-managed values.
-	if _, err := db.ExecContext(ctx, "UPDATE users SET activeso_updated_at = '2001-01-01 00:00:00' WHERE id = 'timestamped'"); err != nil {
-		t.Fatal(err)
-	}
-	user, err = model.Find(ctx, "timestamped")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if user.CreatedAt.Format("2006-01-02 15:04:05") != "2000-01-01 00:00:00" || user.UpdatedAt.Format("2006-01-02 15:04:05") != "2001-01-01 00:00:00" {
-		t.Fatalf("loaded timestamps = %v, %v", user.CreatedAt, user.UpdatedAt)
-	}
-	user.CreatedAt = user.CreatedAt.AddDate(10, 0, 0)
-	user.UpdatedAt = user.UpdatedAt.AddDate(10, 0, 0)
-	if err := user.Save(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if user.CreatedAt.Format("2006-01-02 15:04:05") != "2000-01-01 00:00:00" || user.UpdatedAt.Format("2006-01-02 15:04:05") == "2001-01-01 00:00:00" || user.UpdatedAt.Year() == 2011 {
-		t.Fatalf("saved timestamps = %v, %v", user.CreatedAt, user.UpdatedAt)
-	}
-}
-
-// TestAutoMigrateLegacyTimestamps verifies old tables are populated by timestamp triggers.
-func TestAutoMigrateLegacyTimestamps(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[testUser](db)
-	var createdAt, updatedAt string
-
-	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES ('existing', 'existing@example.com')"); err != nil {
-		t.Fatal(err)
-	}
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'existing'").Scan(&createdAt, &updatedAt); err != nil || createdAt == "" || updatedAt == "" {
-		t.Fatalf("backfilled timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES ('new', 'new@example.com')"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT activeso_created_at, activeso_updated_at FROM users WHERE id = 'new'").Scan(&createdAt, &updatedAt); err != nil || createdAt == "" || updatedAt == "" {
-		t.Fatalf("triggered timestamps = %q, %q; error = %v", createdAt, updatedAt, err)
-	}
-}
-
-// TestCreateTranslatesAuthoritativeUniqueViolation reports database-enforced races as UniqueError.
-func TestCreateTranslatesAuthoritativeUniqueViolation(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[testUser](db)
-	var err error
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
 	var uniqueError UniqueError
 
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	if _, err := db.ExecContext(ctx, "CREATE TRIGGER force_create_unique BEFORE INSERT ON users WHEN NEW.id <> 'competing' BEGIN INSERT INTO users (id, email) VALUES ('competing', NEW.email); END"); err != nil {
-		t.Fatalf("create unique trigger error = %v", err)
+	execStatements(t, db, usersSchema)
+
+	if _, err := userModel.Create(ctx, User{Email: "taken@null.live"}); err != nil {
+		t.Fatal(err)
 	}
 
-	_, err = model.Create(ctx, testUser{Email: "race@null.live"})
+	// Create reports the conflicting column.
+	_, err := userModel.Create(ctx, User{Email: "taken@null.live"})
 	if !errors.Is(err, ErrUnique) {
 		t.Fatalf("Create() error = %v, want ErrUnique", err)
 	}
 	if !errors.As(err, &uniqueError) || uniqueError.Field != "email" {
 		t.Fatalf("Create() unique error = %#v, want email", uniqueError)
 	}
-}
 
-// TestSaveTranslatesAuthoritativeUniqueViolation reports database-enforced races as UniqueError.
-func TestSaveTranslatesAuthoritativeUniqueViolation(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[testUser](db)
-	var record *testUser
-	var err error
-	var uniqueError UniqueError
-
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	record, err = model.Create(ctx, testUser{Email: "original@null.live"})
+	// Save reports the same failure.
+	other, err := userModel.Create(ctx, User{Email: "other@null.live"})
 	if err != nil {
-		t.Fatalf("Create() error = %v", err)
+		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, "CREATE TRIGGER force_save_unique BEFORE UPDATE ON users BEGIN INSERT INTO users (id, email) VALUES ('competing', NEW.email); END"); err != nil {
-		t.Fatalf("create unique trigger error = %v", err)
-	}
-
-	record.Email = "race@null.live"
-	err = record.Save(ctx)
+	other.Email = "taken@null.live"
+	err = other.Save(ctx)
 	if !errors.Is(err, ErrUnique) {
 		t.Fatalf("Save() error = %v, want ErrUnique", err)
 	}
@@ -1011,197 +472,204 @@ func TestSaveTranslatesAuthoritativeUniqueViolation(t *testing.T) {
 	}
 }
 
-// TestAutoMigrateEvolvesSafeSchemaChanges verifies nullable additions and rejects unsafe required ones.
-func TestAutoMigrateEvolvesSafeSchemaChanges(t *testing.T) {
+// TestCompositeUniqueViolationsMapToErrUnique verifies unique_with indexes surface as ErrUnique.
+func TestCompositeUniqueViolationsMapToErrUnique(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	versionOne := Model[migrationUserV1](db)
-	versionTwo := Model[migrationUserV2](db)
-	versionThree := Model[migrationUserV3](db)
-	var migrated *migrationUserV2
+	db := openTestDatabase(t)
+	membershipModel := Model[Membership](db)
 
-	if err := versionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("v1 AutoMigrate() error = %v", err)
+	execStatements(t, db, `CREATE TABLE memberships (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL);
+CREATE UNIQUE INDEX memberships_customer_organization ON memberships (customer_id, organization_id);`)
+
+	for _, record := range []Membership{
+		{ID: "one", CustomerID: "customer-a", OrganizationID: "organization-a"},
+		{ID: "two", CustomerID: "customer-a", OrganizationID: "organization-b"},
+		{ID: "three", CustomerID: "customer-b", OrganizationID: "organization-a"},
+	} {
+		if _, err := membershipModel.Create(ctx, record); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := versionOne.Create(ctx, migrationUserV1{ID: "existing-user", Email: "existing@null.live"}); err != nil {
-		t.Fatalf("create existing user: %v", err)
+	if _, err := membershipModel.Create(ctx, Membership{ID: "four", CustomerID: "customer-a", OrganizationID: "organization-a"}); !errors.Is(err, ErrUnique) {
+		t.Fatalf("duplicate membership error = %v, want ErrUnique", err)
 	}
-	if err := versionTwo.AutoMigrate(ctx); err != nil {
-		t.Fatalf("v2 AutoMigrate() error = %v", err)
+}
+
+// TestVerifyAcceptsMatchingSchema verifies a table that honors every hint passes Verify.
+func TestVerifyAcceptsMatchingSchema(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	execStatements(t, db, usersSchema)
+	execStatements(t, db, `CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT NOT NULL, region_id TEXT REFERENCES regions (id) ON DELETE CASCADE);
+CREATE INDEX cities_name ON cities (name);
+CREATE TABLE memberships (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL, UNIQUE (customer_id, organization_id));`)
+
+	if err := Model[User](db).Verify(ctx); err != nil {
+		t.Fatalf("User Verify() error = %v", err)
 	}
-	migrated, err := versionTwo.Find(ctx, "existing-user")
+	if err := Model[City](db).Verify(ctx); err != nil {
+		t.Fatalf("City Verify() error = %v", err)
+	}
+	if err := Model[CascadeCity](db).Verify(ctx); err != nil {
+		t.Fatalf("CascadeCity Verify() error = %v", err)
+	}
+	if err := Model[Membership](db).Verify(ctx); err != nil {
+		t.Fatalf("Membership Verify() error = %v", err)
+	}
+}
+
+// TestVerifyReportsDrift verifies Verify lists every hint the table fails to honor.
+func TestVerifyReportsDrift(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	var schemaError *SchemaError
+
+	execStatements(t, db, `CREATE TABLE users (id TEXT PRIMARY KEY, email INTEGER, embedding BLOB, created_at INTEGER, updated_at TEXT NOT NULL);
+CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT, region_id TEXT REFERENCES regions (id));
+CREATE TABLE memberships (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL);`)
+
+	err := Model[User](db).Verify(ctx)
+	if !errors.Is(err, ErrSchemaMismatch) || !errors.As(err, &schemaError) {
+		t.Fatalf("User Verify() error = %v, want SchemaError", err)
+	}
+	for _, expected := range []string{
+		`column email has type "INTEGER"`,
+		"hint not_null on email",
+		"hint unique on email",
+		"timestamps hint expects TEXT",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("User Verify() error = %q, missing %q", err, expected)
+		}
+	}
+
+	// A missing index and a foreign key without cascade are advisory hint drift.
+	if err := Model[City](db).Verify(ctx); err == nil || !strings.Contains(err.Error(), "hint index on name") {
+		t.Fatalf("City Verify() error = %v, want index drift", err)
+	}
+	if err := Model[CascadeCity](db).Verify(ctx); err == nil || !strings.Contains(err.Error(), "on_delete=cascade") {
+		t.Fatalf("CascadeCity Verify() error = %v, want cascade drift", err)
+	}
+	if err := Model[Membership](db).Verify(ctx); err == nil || !strings.Contains(err.Error(), "hint unique_with on customer_id") {
+		t.Fatalf("Membership Verify() error = %v, want unique_with drift", err)
+	}
+
+	// A missing foreign key is reported against its belongs_to hint.
+	execStatements(t, db, `DROP TABLE cities; CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT NOT NULL, region_id TEXT);`)
+	if err := Model[CascadeCity](db).Verify(ctx); err == nil || !strings.Contains(err.Error(), "hint belongs_to=regions(id)") {
+		t.Fatalf("CascadeCity Verify() error = %v, want missing foreign key", err)
+	}
+}
+
+// TestVerifyReportsMissingTable verifies a missing table is a schema mismatch naming the table.
+func TestVerifyReportsMissingTable(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	err := Model[User](db).Verify(ctx)
+	if !errors.Is(err, ErrSchemaMismatch) || !strings.Contains(err.Error(), "table users does not exist") {
+		t.Fatalf("Verify() error = %v, want missing table", err)
+	}
+}
+
+// TestFirstUseChecksStructureWithoutCachingFailures verifies operations fail clearly until the table exists.
+func TestFirstUseChecksStructureWithoutCachingFailures(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+
+	if _, err := userModel.All(ctx); !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("All() before the table exists error = %v, want ErrSchemaMismatch", err)
+	}
+	if _, err := userModel.Create(ctx, User{Email: "early@null.live"}); !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("Create() before the table exists error = %v, want ErrSchemaMismatch", err)
+	}
+
+	// The failed check is retried, so creating the table afterward makes the model usable.
+	execStatements(t, db, usersSchema)
+	if _, err := userModel.Create(ctx, User{Email: "later@null.live"}); err != nil {
+		t.Fatalf("Create() after the table exists error = %v", err)
+	}
+
+	// Missing mapped columns are structural and reported together.
+	execStatements(t, db, `CREATE TABLE plains (id TEXT PRIMARY KEY)`)
+	if _, err := Model[Plain](db).All(ctx); err == nil || !strings.Contains(err.Error(), "column name is missing") {
+		t.Fatalf("All() with a missing column error = %v, want column name is missing", err)
+	}
+}
+
+// TestFirstUseRequiresProtectedPrimaryKey verifies Save and Delete cannot target an unprotected identity column.
+func TestFirstUseRequiresProtectedPrimaryKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	execStatements(t, db, `CREATE TABLE plains (id TEXT, name TEXT)`)
+	if _, err := Model[Plain](db).All(ctx); err == nil || !strings.Contains(err.Error(), "primary key column id") {
+		t.Fatalf("All() error = %v, want primary key guidance", err)
+	}
+
+	// A single-column unique index protects identity just like a PRIMARY KEY.
+	execStatements(t, db, `CREATE UNIQUE INDEX plains_id ON plains (id)`)
+	if _, err := Model[Plain](db).All(ctx); err != nil {
+		t.Fatalf("All() with a unique index error = %v", err)
+	}
+}
+
+// TestVerifyMatchesColumnsCaseInsensitively verifies identifier case does not cause false drift.
+func TestVerifyMatchesColumnsCaseInsensitively(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	execStatements(t, db, `CREATE TABLE users (ID TEXT PRIMARY KEY, EMAIL TEXT NOT NULL, Embedding BLOB, CREATED_AT TEXT NOT NULL, Updated_At TEXT NOT NULL);
+CREATE UNIQUE INDEX users_email ON users (Email);`)
+
+	if err := Model[User](db).Verify(ctx); err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+}
+
+// TestExplicitPrimaryKey verifies the primary_key hint selects the identity column.
+func TestExplicitPrimaryKey(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	deviceModel := Model[Device](db)
+
+	execStatements(t, db, `CREATE TABLE devices (external_id TEXT PRIMARY KEY, label TEXT)`)
+
+	created, err := deviceModel.Create(ctx, Device{ExternalID: "external", Label: "phone"})
 	if err != nil {
-		t.Fatalf("load existing migrated user: %v", err)
+		t.Fatal(err)
 	}
-	if migrated.Nickname != "" {
-		t.Fatalf("migrated nickname = %q, want empty string", migrated.Nickname)
-	}
-	if _, err := versionTwo.Create(ctx, migrationUserV2{ID: "empty-nickname", Email: "empty@null.live", Nickname: ""}); err != nil {
-		t.Fatalf("create empty nickname user: %v", err)
-	}
-	migrated, err = versionTwo.Find(ctx, "empty-nickname")
-	if err != nil {
-		t.Fatalf("load empty nickname user: %v", err)
-	}
-	if migrated.Nickname != "" {
-		t.Fatalf("empty nickname = %q, want empty string", migrated.Nickname)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO migration_users (id, email, nickname) VALUES (?, ?, ?)", "migrated-user", "migrated@null.live", "Migrate"); err != nil {
-		t.Fatalf("insert with migrated column: %v", err)
-	}
-	if err := versionThree.AutoMigrate(ctx); err == nil {
-		t.Fatal("v3 AutoMigrate() succeeded while adding a required column")
+	found, err := deviceModel.Find(ctx, "external")
+	if err != nil || found.Label != created.Label {
+		t.Fatalf("Find() = %#v, error = %v", found, err)
 	}
 }
 
-// TestAutoMigrateHintsExplicitMigrations directs destructive schema changes to the matching API.
-func TestAutoMigrateHintsExplicitMigrations(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	newRequiredColumnDB := openTestDatabase(t, ctx)
-	existingRequiredColumnDB := openTestDatabase(t, ctx)
-	typeDB := openTestDatabase(t, ctx)
-	primaryKeyDB := openTestDatabase(t, ctx)
-	uniqueDB := openTestDatabase(t, ctx)
-	versionOne := Model[migrationUserV1](newRequiredColumnDB)
-	versionThree := Model[migrationUserV3](newRequiredColumnDB)
-	existingRequiredVersionOne := Model[migrationUserV1](existingRequiredColumnDB)
-	requiredEmail := Model[migrationUserRequiredEmail](existingRequiredColumnDB)
-	typeVersionOne := Model[migrationUserV1](typeDB)
-	integerEmail := Model[migrationUserIntegerEmail](typeDB)
-	primaryKeyVersionOne := Model[migrationUserV1](primaryKeyDB)
-	integerID := Model[migrationUserIntegerID](primaryKeyDB)
-	uniqueVersionOne := Model[caseUniqueUserV1](uniqueDB)
-	uniqueRemoval := Model[caseUniqueUserV3](uniqueDB)
-	var err error
-
-	// Adding a required column requires a nullable addition and a backfill first.
-	if err := versionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("not-null v1 AutoMigrate() error = %v", err)
-	}
-	err = versionThree.AutoMigrate(ctx)
-	if err == nil || !strings.Contains(err.Error(), `SetNotNull(ctx, "required")`) {
-		t.Fatalf("not-null AutoMigrate() error = %v, want SetNotNull hint", err)
-	}
-
-	// Tightening an existing nullable column also requires an explicit rebuild.
-	if err := existingRequiredVersionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("existing required-column v1 AutoMigrate() error = %v", err)
-	}
-	err = requiredEmail.AutoMigrate(ctx)
-	if err == nil || !strings.Contains(err.Error(), `SetNotNull(ctx, "email")`) {
-		t.Fatalf("existing required-column AutoMigrate() error = %v, want SetNotNull hint", err)
-	}
-
-	// Changing an existing column's storage type requires an explicit rebuild.
-	if err := typeVersionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("type v1 AutoMigrate() error = %v", err)
-	}
-	err = integerEmail.AutoMigrate(ctx)
-	if err == nil || !strings.Contains(err.Error(), `ChangeColumnType(ctx, "email")`) {
-		t.Fatalf("type AutoMigrate() error = %v, want ChangeColumnType hint", err)
-	}
-
-	// Primary-key affinity changes require a dedicated manual migration.
-	if err := primaryKeyVersionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("primary-key v1 AutoMigrate() error = %v", err)
-	}
-	err = integerID.AutoMigrate(ctx)
-	if err == nil || !strings.Contains(err.Error(), "dedicated manual migration") {
-		t.Fatalf("primary-key AutoMigrate() error = %v, want manual migration hint", err)
-	}
-
-	// Removing ActiveSo's managed unique index also requires an explicit operation.
-	if err := uniqueVersionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("unique v1 AutoMigrate() error = %v", err)
-	}
-	err = uniqueRemoval.AutoMigrate(ctx)
-	if err == nil || !strings.Contains(err.Error(), `DropUnique(ctx, "EMAIL")`) {
-		t.Fatalf("unique AutoMigrate() error = %v, want DropUnique hint", err)
-	}
-}
-
-// TestExplicitMigrations verifies destructive schema changes require explicit model operations.
-func TestExplicitMigrations(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	versionOne := Model[migrationUserV1](db)
-	integerEmail := Model[migrationUserIntegerEmail](db)
-	versionTwo := Model[migrationUserIntegerEmailV2](db)
-	requiredNickname := Model[migrationUserRequiredNickname](db)
-	var columnType string
-
-	if err := versionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("v1 AutoMigrate() error = %v", err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO migration_users (id, email) VALUES (?, ?)", "migration-user", "42"); err != nil {
-		t.Fatalf("insert initial migration row: %v", err)
-	}
-	if err := integerEmail.ChangeColumnType(ctx, "email"); err != nil {
-		t.Fatalf("ChangeColumnType() error = %v", err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT type FROM pragma_table_info('migration_users') WHERE name = 'email'").Scan(&columnType); err != nil {
-		t.Fatalf("inspect changed column type: %v", err)
-	}
-	if columnType != "INTEGER" {
-		t.Fatalf("email type = %q, want INTEGER", columnType)
-	}
-
-	if err := versionTwo.AutoMigrate(ctx); err != nil {
-		t.Fatalf("v2 AutoMigrate() error = %v", err)
-	}
-	if err := requiredNickname.SetNotNull(ctx, "nickname"); err == nil || !strings.Contains(err.Error(), `SetNotNull(ctx, "nickname")`) {
-		t.Fatalf("SetNotNull() error = %v, want backfill and retry hint", err)
-	}
-	if _, err := db.ExecContext(ctx, "UPDATE migration_users SET nickname = ?", "Migrate"); err != nil {
-		t.Fatalf("fill nickname: %v", err)
-	}
-	if err := requiredNickname.SetNotNull(ctx, "nickname"); err != nil {
-		t.Fatalf("SetNotNull() error = %v", err)
-	}
-	if err := versionOne.DropColumn(ctx, "nickname"); err != nil {
-		t.Fatalf("DropColumn() error = %v", err)
-	}
-	if _, err := db.ExecContext(ctx, "SELECT nickname FROM migration_users"); err == nil {
-		t.Fatal("DropColumn() left nickname queryable")
-	}
-
-	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX "+quoteIdentifier(versionOne.uniqueIndexName(field{column: "email"}))+" ON migration_users (email)"); err != nil {
-		t.Fatalf("create explicit unique index: %v", err)
-	}
-	if err := versionOne.DropUnique(ctx, "email"); err != nil {
-		t.Fatalf("DropUnique() error = %v", err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO migration_users (id, email) VALUES (?, ?)", "duplicate-email", "42"); err != nil {
-		t.Fatalf("insert after DropUnique(): %v", err)
-	}
-}
-
-// TestDefaultIdentifierNames verifies default table names use English plurals without double-pluralizing names.
+// TestDefaultIdentifierNames verifies table names derive from type names.
 func TestDefaultIdentifierNames(t *testing.T) {
 	// Initialize Variables
-	apiKey := snakeCase("APIKey")
 	blogPost := pluralize(snakeCase("BlogPost"))
 	city := pluralize(snakeCase("City"))
 	person := pluralize(snakeCase("Person"))
 	users := pluralize(snakeCase("Users"))
 
-	if apiKey != "api_key" {
+	if apiKey := snakeCase("APIKey"); apiKey != "api_key" {
 		t.Fatalf("snakeCase(APIKey) = %q, want api_key", apiKey)
 	}
-	if blogPost != "blog_posts" {
-		t.Fatalf("default BlogPost table = %q, want blog_posts", blogPost)
-	}
-	if city != "cities" {
-		t.Fatalf("default City table = %q, want cities", city)
-	}
-	if person != "people" {
-		t.Fatalf("default Person table = %q, want people", person)
-	}
-	if users != "users" {
-		t.Fatalf("default Users table = %q, want users", users)
+	if blogPost != "blog_posts" || city != "cities" || person != "people" || users != "users" {
+		t.Fatalf("table names = %q, %q, %q, %q", blogPost, city, person, users)
 	}
 }
 
@@ -1209,11 +677,13 @@ func TestDefaultIdentifierNames(t *testing.T) {
 func TestRecordRequiresBinding(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	user := testUser{ID: "unbound", Email: "hello@null.live"}
-	err := user.Save(ctx)
+	user := User{ID: "unbound", Email: "hello@null.live"}
 
-	if !errors.Is(err, ErrUnboundRecord) {
+	if err := user.Save(ctx); !errors.Is(err, ErrUnboundRecord) {
 		t.Fatalf("Save() error = %v, want ErrUnboundRecord", err)
+	}
+	if err := user.Delete(ctx); !errors.Is(err, ErrUnboundRecord) {
+		t.Fatalf("Delete() error = %v, want ErrUnboundRecord", err)
 	}
 }
 
@@ -1221,12 +691,15 @@ func TestRecordRequiresBinding(t *testing.T) {
 func TestModelBind(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	userModel := Model[testUser](db)
-	user := testUser{ID: "manual-user", Email: "manual@null.live"}
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	user := User{ID: "manual-user", Email: "manual@null.live"}
+	var nilUser *User
 
-	if err := userModel.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
+	execStatements(t, db, usersSchema)
+
+	if _, err := userModel.Bind(nilUser); !errors.Is(err, ErrUnboundRecord) {
+		t.Fatalf("Bind(nil) error = %v, want ErrUnboundRecord", err)
 	}
 	if _, err := userModel.Bind(&user); err != nil {
 		t.Fatalf("Bind() error = %v", err)
@@ -1234,7 +707,7 @@ func TestModelBind(t *testing.T) {
 	if !user.CreatedAt.IsZero() || !user.UpdatedAt.IsZero() {
 		t.Fatalf("Bind() loaded timestamps = %v, %v", user.CreatedAt, user.UpdatedAt)
 	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email) VALUES (?, ?)", user.ID, user.Email); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO users (id, email, created_at, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", user.ID, user.Email); err != nil {
 		t.Fatalf("insert bound user: %v", err)
 	}
 
@@ -1251,30 +724,27 @@ func TestModelBind(t *testing.T) {
 func TestBoundRecordIDIsImmutable(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	userModel := Model[testUser](db)
-	alice := testUser{ID: "alice", Email: "alice@null.live"}
-	bob := testUser{ID: "bob", Email: "bob@null.live"}
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
 	var email string
 
-	if err := userModel.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	boundAlice, err := userModel.Create(ctx, alice)
+	execStatements(t, db, usersSchema)
+
+	alice, err := userModel.Create(ctx, User{ID: "alice", Email: "alice@null.live"})
 	if err != nil {
 		t.Fatalf("Create(alice) error = %v", err)
 	}
-	if _, err := userModel.Create(ctx, bob); err != nil {
+	if _, err := userModel.Create(ctx, User{ID: "bob", Email: "bob@null.live"}); err != nil {
 		t.Fatalf("Create(bob) error = %v", err)
 	}
 
 	// Reject identity changes before they can target another row.
-	boundAlice.ID = "bob"
-	boundAlice.Email = "overwritten@null.live"
-	if err := boundAlice.Save(ctx); !errors.Is(err, ErrIDChanged) {
+	alice.ID = "bob"
+	alice.Email = "overwritten@null.live"
+	if err := alice.Save(ctx); !errors.Is(err, ErrIDChanged) {
 		t.Fatalf("Save() error = %v, want ErrIDChanged", err)
 	}
-	if err := boundAlice.Delete(ctx); !errors.Is(err, ErrIDChanged) {
+	if err := alice.Delete(ctx); !errors.Is(err, ErrIDChanged) {
 		t.Fatalf("Delete() error = %v, want ErrIDChanged", err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT email FROM users WHERE id = ?", "bob").Scan(&email); err != nil {
@@ -1289,302 +759,102 @@ func TestBoundRecordIDIsImmutable(t *testing.T) {
 func TestNullStringPreservesNULL(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	userModel := Model[nullableStringUser](db)
-	missingNickname := nullableStringUser{ID: "missing", Email: "missing@null.live"}
-	emptyNickname := nullableStringUser{ID: "empty", Email: "empty@null.live", Nickname: sql.NullString{String: "", Valid: true}}
+	db := openTestDatabase(t)
+	profileModel := Model[Profile](db)
 
-	if err := userModel.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	if _, err := userModel.Create(ctx, missingNickname); err != nil {
+	execStatements(t, db, `CREATE TABLE profiles (id TEXT PRIMARY KEY, nickname TEXT)`)
+
+	if _, err := profileModel.Create(ctx, Profile{ID: "missing"}); err != nil {
 		t.Fatalf("Create(NULL nickname) error = %v", err)
 	}
-	if _, err := userModel.Create(ctx, emptyNickname); err != nil {
+	if _, err := profileModel.Create(ctx, Profile{ID: "empty", Nickname: sql.NullString{Valid: true}}); err != nil {
 		t.Fatalf("Create(empty nickname) error = %v", err)
 	}
-
-	missing, err := userModel.Find(ctx, "missing")
-	if err != nil {
-		t.Fatalf("Find(NULL nickname) error = %v", err)
+	missing, err := profileModel.Find(ctx, "missing")
+	if err != nil || missing.Nickname.Valid {
+		t.Fatalf("Find(NULL nickname) = %#v, error = %v", missing, err)
 	}
-	empty, err := userModel.Find(ctx, "empty")
-	if err != nil {
-		t.Fatalf("Find(empty nickname) error = %v", err)
-	}
-	if missing.Nickname.Valid {
-		t.Fatalf("NULL nickname Valid = true, want false")
-	}
-	if !empty.Nickname.Valid || empty.Nickname.String != "" {
-		t.Fatalf("empty nickname = %#v, want valid empty string", empty.Nickname)
+	empty, err := profileModel.Find(ctx, "empty")
+	if err != nil || !empty.Nickname.Valid || empty.Nickname.String != "" {
+		t.Fatalf("Find(empty nickname) = %#v, error = %v", empty, err)
 	}
 }
 
-// TestNullableWrappersMapAndPreserveValues maps database/sql nullable scalar wrappers correctly.
-func TestNullableWrappersMapAndPreserveValues(t *testing.T) {
+// TestNullableScalarsReadAsZeroValues verifies NULL columns remain readable by plain Go fields.
+func TestNullableScalarsReadAsZeroValues(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[nullableWrapperUser](db)
-	present := nullableWrapperUser{
+	db := openTestDatabase(t)
+	accountModel := Model[Account](db)
+	present := Account{
 		ID:      "present",
 		Count:   sql.NullInt64{Int64: 42, Valid: true},
 		Score:   sql.NullFloat64{Float64: 3.5, Valid: true},
 		Enabled: sql.NullBool{Bool: true, Valid: true},
-	}
-	var countType, scoreType, enabledType string
-	var missing, found *nullableWrapperUser
-	var err error
-
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT type FROM pragma_table_info('nullable_wrapper_users') WHERE name = 'count'").Scan(&countType); err != nil || countType != "INTEGER" {
-		t.Fatalf("count schema = %q, error = %v, want INTEGER", countType, err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT type FROM pragma_table_info('nullable_wrapper_users') WHERE name = 'score'").Scan(&scoreType); err != nil || scoreType != "REAL" {
-		t.Fatalf("score schema = %q, error = %v, want REAL", scoreType, err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT type FROM pragma_table_info('nullable_wrapper_users') WHERE name = 'enabled'").Scan(&enabledType); err != nil || enabledType != "INTEGER" {
-		t.Fatalf("enabled schema = %q, error = %v, want INTEGER", enabledType, err)
-	}
-	if _, err := model.Create(ctx, nullableWrapperUser{ID: "missing"}); err != nil {
-		t.Fatalf("Create(NULL wrappers) error = %v", err)
-	}
-	if _, err := model.Create(ctx, present); err != nil {
-		t.Fatalf("Create(present wrappers) error = %v", err)
+		Visits:  7,
 	}
 
-	missing, err = model.Find(ctx, "missing")
-	if err != nil || missing.Count.Valid || missing.Score.Valid || missing.Enabled.Valid {
-		t.Fatalf("Find(NULL wrappers) = %#v, error = %v", missing, err)
+	execStatements(t, db, `CREATE TABLE accounts (id TEXT PRIMARY KEY, count INTEGER, score REAL, enabled INTEGER, visits INTEGER);
+INSERT INTO accounts (id) VALUES ('legacy');`)
+
+	// Rows with NULL scalars read as zero values; nullable wrappers keep NULL distinguishable.
+	legacy, err := accountModel.Find(ctx, "legacy")
+	if err != nil || legacy.Visits != 0 || legacy.Count.Valid || legacy.Score.Valid || legacy.Enabled.Valid {
+		t.Fatalf("Find(legacy) = %#v, error = %v", legacy, err)
 	}
-	found, err = model.Find(ctx, "present")
-	if err != nil || found.Count != present.Count || found.Score != present.Score || found.Enabled != present.Enabled {
-		t.Fatalf("Find(present wrappers) = %#v, error = %v", found, err)
+	if _, err := accountModel.Create(ctx, present); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	found, err := accountModel.Find(ctx, "present")
+	if err != nil || found.Count != present.Count || found.Score != present.Score || found.Enabled != present.Enabled || found.Visits != 7 {
+		t.Fatalf("Find(present) = %#v, error = %v", found, err)
 	}
 }
 
-// TestModelEdgeCases verifies validation and persistence behavior for reviewed boundary cases.
-func TestModelEdgeCases(t *testing.T) {
+// TestModelRejectsInvalidDeclarations verifies bad tags and shapes panic before touching the database.
+func TestModelRejectsInvalidDeclarations(t *testing.T) {
 	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	idOnlyModel := Model[idOnlyUser](db)
-	explicitKeyModel := Model[explicitPrimaryKeyUser](db)
-	var nilUser *testUser
+	db := openTestDatabase(t)
 
-	if err := idOnlyModel.AutoMigrate(ctx); err != nil {
-		t.Fatalf("ID-only AutoMigrate() error = %v", err)
-	}
-	idOnly, err := idOnlyModel.Create(ctx, idOnlyUser{ID: "only"})
-	if err != nil {
-		t.Fatalf("ID-only Create() error = %v", err)
-	}
-	if err := idOnly.Save(ctx); err != nil {
-		t.Fatalf("ID-only Save() error = %v", err)
-	}
-	if _, err := Model[testUser](db).Bind(nilUser); !errors.Is(err, ErrUnboundRecord) {
-		t.Fatalf("Bind(nil) error = %v, want ErrUnboundRecord", err)
-	}
-
-	if err := explicitKeyModel.AutoMigrate(ctx); err != nil {
-		t.Fatalf("explicit primary key AutoMigrate() error = %v", err)
-	}
-	created, err := explicitKeyModel.Create(ctx, explicitPrimaryKeyUser{ExternalID: "external", Email: "key@null.live"})
-	if err != nil {
-		t.Fatalf("explicit primary key Create() error = %v", err)
-	}
-	found, err := explicitKeyModel.Find(ctx, "external")
-	if err != nil || found.Email != created.Email {
-		t.Fatalf("explicit primary key Find() = %#v, %v", found, err)
-	}
-}
-
-// TestAutoMigrateEnforcesRequiredPrimaryKeys rejects NULL primary-key values in direct writes.
-func TestAutoMigrateEnforcesRequiredPrimaryKeys(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[requiredPrimaryKeyUser](db)
-	var required bool
-
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	if err := db.QueryRowContext(ctx, `SELECT "notnull" FROM pragma_table_info('required_primary_key_users') WHERE name = 'external_id'`).Scan(&required); err != nil || !required {
-		t.Fatalf("external_id NOT NULL = %t, error = %v, want true", required, err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO required_primary_key_users (external_id) VALUES (NULL)"); err == nil {
-		t.Fatal("direct NULL primary-key insert succeeded")
-	}
-}
-
-// TestAutoMigrateHandlesNullableScalars keeps legacy rows readable after scalar additions.
-func TestAutoMigrateHandlesNullableScalars(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	versionOne := Model[numericMigrationV1](db)
-	versionTwo := Model[numericMigrationV2](db)
-
-	if err := versionOne.AutoMigrate(ctx); err != nil {
-		t.Fatalf("v1 AutoMigrate() error = %v", err)
-	}
-	if _, err := versionOne.Create(ctx, numericMigrationV1{ID: "existing"}); err != nil {
-		t.Fatalf("v1 Create() error = %v", err)
-	}
-	if err := versionTwo.AutoMigrate(ctx); err != nil {
-		t.Fatalf("v2 AutoMigrate() error = %v", err)
-	}
-	migrated, err := versionTwo.Find(ctx, "existing")
-	if err != nil {
-		t.Fatalf("v2 Find() error = %v", err)
-	}
-	if migrated.Count != 0 || migrated.Score != 0 || migrated.Enabled {
-		t.Fatalf("nullable scalar defaults = %#v, want zero values", migrated)
-	}
-}
-
-// TestAutoMigrateRejectsUnconstrainedLegacyID rejects tables whose modeled identity is not unique.
-func TestAutoMigrateRejectsUnconstrainedLegacyID(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[testUser](db)
-	var err error
-
-	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT, email TEXT, embedding BLOB)"); err != nil {
-		t.Fatal(err)
-	}
-	err = model.AutoMigrate(ctx)
-	if err == nil {
-		t.Fatal("AutoMigrate() accepted an unconstrained legacy ID")
-	}
-}
-
-// TestAutoMigrateRejectsCompositeLegacyID rejects composite keys that do not uniquely identify the modeled ID.
-func TestAutoMigrateRejectsCompositeLegacyID(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[testUser](db)
-	var err error
-
-	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT, tenant TEXT, email TEXT, embedding BLOB, PRIMARY KEY (id, tenant))"); err != nil {
-		t.Fatal(err)
-	}
-	err = model.AutoMigrate(ctx)
-	if err == nil {
-		t.Fatal("AutoMigrate() accepted a composite legacy ID")
-	}
-}
-
-// TestAutoMigrateAcceptsUniqueLegacyID accepts an existing identity protected by a unique constraint.
-func TestAutoMigrateAcceptsUniqueLegacyID(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[testUser](db)
-
-	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id TEXT UNIQUE, email TEXT NOT NULL, embedding BLOB)"); err != nil {
-		t.Fatal(err)
-	}
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-}
-
-// TestAutoMigrateMatchesColumnsCaseInsensitively accepts SQLite's case-insensitive identifiers.
-func TestAutoMigrateMatchesColumnsCaseInsensitively(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	model := Model[caseColumnUser](db)
-	var columns int
-
-	if _, err := db.ExecContext(ctx, "CREATE TABLE case_column_users (id TEXT PRIMARY KEY, Email TEXT)"); err != nil {
-		t.Fatal(err)
-	}
-	if err := model.AutoMigrate(ctx); err != nil {
-		t.Fatalf("AutoMigrate() error = %v", err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('case_column_users')").Scan(&columns); err != nil || columns != 4 {
-		t.Fatalf("column count = %d, error = %v, want 4 columns", columns, err)
-	}
-}
-
-// TestUniqueIndexNamesAreUnambiguous creates indexes for formerly colliding table-column pairs.
-func TestUniqueIndexNamesAreUnambiguous(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	first := Model[uniqueCollisionFirst](db)
-	second := Model[uniqueCollisionSecond](db)
-
-	if first.uniqueIndexName(first.fields[1]) == second.uniqueIndexName(second.fields[1]) {
-		t.Fatal("unique index names collide")
-	}
-	if err := first.AutoMigrate(ctx); err != nil {
-		t.Fatalf("first AutoMigrate() error = %v", err)
-	}
-	if err := second.AutoMigrate(ctx); err != nil {
-		t.Fatalf("second AutoMigrate() error = %v", err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO foo_bar (id, baz) VALUES ('one', 'duplicate'), ('two', 'duplicate')"); err == nil {
-		t.Fatal("first unique index was not enforced")
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO foo (id, bar_baz) VALUES ('one', 'duplicate'), ('two', 'duplicate')"); err == nil {
-		t.Fatal("second unique index was not enforced")
-	}
-}
-
-// TestUniqueIndexNamesIgnoreIdentifierCase reuses and removes indexes across case-only mapping changes.
-func TestUniqueIndexNamesIgnoreIdentifierCase(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-	first := Model[caseUniqueUserV1](db)
-	second := Model[caseUniqueUserV2](db)
-	removal := Model[caseUniqueUserV3](db)
-	indexName := first.uniqueIndexName(first.fields[1])
-	var indexes int
-
-	if err := first.AutoMigrate(ctx); err != nil {
-		t.Fatalf("first AutoMigrate() error = %v", err)
-	}
-	if err := second.AutoMigrate(ctx); err != nil {
-		t.Fatalf("second AutoMigrate() error = %v", err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexes); err != nil || indexes != 1 {
-		t.Fatalf("unique index count = %d, error = %v, want 1", indexes, err)
-	}
-	if err := removal.AutoMigrate(ctx); err == nil || !strings.Contains(err.Error(), `DropUnique(ctx, "EMAIL")`) {
-		t.Fatalf("AutoMigrate() after case-only table-name change error = %v, want DropUnique hint", err)
-	}
-	if err := removal.DropUnique(ctx, "EMAIL"); err != nil {
-		t.Fatalf("DropUnique() error = %v", err)
-	}
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'index' AND name = ?", indexName).Scan(&indexes); err != nil || indexes != 0 {
-		t.Fatalf("unique index count after DropUnique() = %d, error = %v, want 0", indexes, err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO case_unique_users (id, email) VALUES ('one', 'duplicate'), ('two', 'duplicate')"); err != nil {
-		t.Fatalf("duplicate insert after DropUnique() error = %v", err)
-	}
-}
-
-// TestModelRejectsInvalidPrimaryKeyMappings rejects ambiguous and unrepresentable model identities.
-func TestModelRejectsInvalidPrimaryKeyMappings(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	db := openTestDatabase(t, ctx)
-
+	assertModelPanics(t, func() { Model[untaggedField](db) })
+	assertModelPanics(t, func() { Model[unsupportedRecordHint](db) })
+	assertModelPanics(t, func() { Model[unsupportedFieldHint](db) })
+	assertModelPanics(t, func() { Model[reservedTimestampColumn](db) })
+	assertModelPanics(t, func() { Model[invalidCascadeWithoutForeignKey](db) })
+	assertModelPanics(t, func() { Model[invalidForeignKeyTarget](db) })
 	assertModelPanics(t, func() { Model[duplicateColumnUser](db) })
 	assertModelPanics(t, func() { Model[multiplePrimaryKeyUser](db) })
 	assertModelPanics(t, func() { Model[primaryKeyUniqueWithUser](db) })
 	assertModelPanics(t, func() { Model[mutablePrimaryKeyUser](db) })
 	assertModelPanics(t, func() { Model[uintPrimaryKeyUser](db) })
 	assertModelPanics(t, func() { Model[uint64PrimaryKeyUser](db) })
+	assertModelPanics(t, func() { Model[noPrimaryKeyUser](db) })
+}
+
+// TestModelAcceptsSkippedFields verifies db:"-" excludes an exported field from persistence.
+func TestModelAcceptsSkippedFields(t *testing.T) {
+	// Initialize Variables
+	model := Model[skippedField](openTestDatabase(t))
+
+	if len(model.fields) != 1 || model.fields[0].column != "id" {
+		t.Fatalf("fields = %#v, want only id", model.fields)
+	}
+}
+
+// TestUntaggedFieldPanicNamesTheField verifies the db-tag requirement explains how to fix the model.
+func TestUntaggedFieldPanicNamesTheField(t *testing.T) {
+	// Initialize Variables
+	db := openTestDatabase(t)
+	recovered := any(nil)
+
+	func() {
+		defer func() { recovered = recover() }()
+		Model[untaggedField](db)
+	}()
+	err, ok := recovered.(error)
+	if !ok || !strings.Contains(err.Error(), "Email") || !strings.Contains(err.Error(), "db tag") {
+		t.Fatalf("panic = %v, want db tag guidance naming Email", recovered)
+	}
 }
 
 // assertModelPanics confirms invalid model declarations fail before touching the database.
@@ -1604,12 +874,29 @@ func assertModelPanics(t *testing.T, create func()) {
 	create()
 }
 
-// openTestDatabase opens a temporary Turso database for an AutoMigrate call.
-func openTestDatabase(t *testing.T, ctx context.Context) *sql.DB {
+// execStatements runs semicolon-separated DDL statements against db.
+func execStatements(t *testing.T, db *sql.DB, statements string) {
+	// Initialize Variables
+	ctx := context.Background()
+
+	t.Helper()
+	for _, statement := range strings.Split(statements, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("exec %q: %v", statement, err)
+		}
+	}
+}
+
+// openTestDatabase opens an isolated temporary Turso database.
+func openTestDatabase(t *testing.T) *sql.DB {
 	// Initialize Variables
 	path := filepath.Join(t.TempDir(), "activeso.db")
 	db, err := sql.Open("turso", path)
 
+	t.Helper()
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}

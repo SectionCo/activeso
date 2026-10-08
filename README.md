@@ -1,13 +1,15 @@
 # ActiveSo
 
-ActiveSo is a small active record-like persistence layer for Go structs backed by Turso.
+ActiveSo is a small active record-like persistence layer for Go structs backed by Turso. It generates the SQL for creating, reading, updating, and deleting records. **It does not create or migrate your schema:** you own your tables and their migrations, and ActiveSo checks that they match your Go types.
 
 ## Table of contents
 
 - [Quick start](#quick-start)
-- [Mapping a model to SQL](#mapping-a-model-to-sql)
-- [Constraint options](#constraint-options)
+- [Bring your own schema](#bring-your-own-schema)
+- [Hints](#hints)
+- [Verifying your schema](#verifying-your-schema)
 - [API](#api)
+- [Upgrading from 1.x](#upgrading-from-1x)
 - [Browser example](#browser-example)
 
 ## Quick start
@@ -19,15 +21,15 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/sectionco/activeso"
+	"github.com/sectionco/activeso/v2"
 	turso "turso.tech/database/tursogo"
 )
 
 type User struct {
-	activeso.Record
+	activeso.Record `activeso:"timestamps"`
 
-	ID        string             `db:"id"`
-	Email     string             `db:"email" activeso:"not_null,unique"`
+	ID        string            `db:"id"`
+	Email     string            `db:"email" activeso:"not_null,unique"`
 	Embedding activeso.Vector32 `db:"embedding"`
 }
 
@@ -41,18 +43,27 @@ func example(ctx context.Context) error {
 	db := sql.OpenDB(connector)
 	defer db.Close()
 
-	// If using ActiveSo 'belongs_to', we recommend enabling enforcement for belongs_to foreign-key constraints on this connection.
+	// Create the table with your own migrations; ActiveSo never creates or alters tables.
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS users (
+		id TEXT PRIMARY KEY,
+		email TEXT NOT NULL,
+		embedding BLOB,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users (email)"); err != nil {
+		return err
+	}
+
+	// If using the belongs_to hint, enable foreign-key enforcement on this connection.
 	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 		return err
 	}
 
-	// Initialize the User model.
+	// Initialize the User model once and reuse it.
 	userModel := activeso.Model[User](db)
-
-	// Optional: run during application setup to create or update the schema.
-	if err := userModel.AutoMigrate(ctx); err != nil {
-		return err
-	}
 
 	// Create a new User record.
 	user, err := userModel.Create(ctx, User{Email: "hello@null.live"})
@@ -87,43 +98,50 @@ func (Customer) TableName() string {
 }
 ```
 
-Run `AutoMigrate(ctx)` separately during application setup or deployment when you want ActiveSo to create the table, add missing nullable columns, and create tagged unique indexes; it is not required for normal model initialization or record operations.
+## Bring your own schema
 
-## Mapping a model to SQL
-
-For example, the `User` model maps to the following Turso table.
-
-```go
-type User struct {
-	activeso.Record
-
-	ID    string `db:"id"`
-	Email string `db:"email" activeso:"not_null,unique"`
-}
-```
+ActiveSo reads and writes tables that already exist. Create and change them with whatever migration tooling you prefer. The `User` model above maps to this table:
 
 ```sql
 CREATE TABLE users (
 	id TEXT PRIMARY KEY,
 	email TEXT NOT NULL,
-	activeso_created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	activeso_updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	embedding BLOB,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX activeso_7573657273_656d61696c_unique ON users (email);
+CREATE UNIQUE INDEX users_email ON users (email);
 ```
 
-`Record` holds ActiveSo's runtime persistence binding and is not a database column. It promotes managed `time.Time` fields as `CreatedAt` and `UpdatedAt` on each model value. The `db` tags select column names; without them, ActiveSo derives snake_case names from exported field names. Every ActiveSo table also receives implicit `activeso_created_at` and `activeso_updated_at` UTC timestamp columns. New tables use `CURRENT_TIMESTAMP` defaults. On updates that name a non-timestamp column (including no-op assignments), a trigger refreshes `activeso_updated_at` unless the statement supplies an update timestamp different from the row's old value. Ordinary data updates leave `activeso_created_at` unchanged. `Create`, reads, and successful `Save` calls populate or refresh the Go fields; `Bind` only attaches persistence behavior and does not load timestamps. The `activeso:"not_null,unique"` tag adds `NOT NULL` and a unique index when `AutoMigrate(ctx)` runs.
+**Every persisted field needs a `db` tag** naming its column. ActiveSo does not guess column names, so `activeso.Model[T](db)` panics at setup when an exported field has no `db` tag. Use `db:"-"` to exclude an exported field from persistence. Columns that exist in the table but not in the struct are ignored, so you can add columns ahead of a deploy or drop a field's column later.
 
-**Timestamp replay policy:** Direct SQL may replace either timestamp, and a changed supplied `activeso_updated_at` is preserved rather than regenerated. This allows delayed row-image replay without a current-time guard aborting the entire update. A supplied update timestamp equal to the old value is indistinguishable from an omitted timestamp and refreshes on data-column updates; timestamp-only updates do not invoke the refresh trigger. This is a value-based policy, not replay detection: SQL-level creation-time immutability and protection against manual timestamp replacement are no longer enforced. ActiveSo `Create` and `Save` still manage timestamps automatically and do not persist assignments to the Go timestamp fields. SQL callers should supply valid UTC timestamp text (`YYYY-MM-DD HH:MM:SS` or RFC3339), since malformed values cannot be loaded into `Record`.
+`Record` holds ActiveSo's runtime persistence binding and is not a database column.
 
-**Upgrading existing databases:** Run `AutoMigrate(ctx)` for each model after updating ActiveSo. It transactionally removes the previous rejection guards and replaces the update trigger; upgrading the package alone does not change triggers already installed in a database. Repeated migrations retain this policy. Deploy the updated policy to every database that may execute replayed writes. Full remote Push/Pull behavior must still be validated with the consumer's sync setup.
+### Timestamps
 
-When loading a plain Go `string`, ActiveSo reads SQL `NULL` as `""`. This is the default: it lets a nullable string column added by `AutoMigrate` remain readable for pre-existing rows. A plain string write always stores text, so `NULL` and an empty string become indistinguishable after the value is loaded or saved.
+`Record` promotes `CreatedAt` and `UpdatedAt` fields, but ActiveSo only manages them when you opt in with the `timestamps` hint on the embedded `Record`:
 
-Plain numeric and boolean fields also read `NULL` as their Go zero values (`0`, `0.0`, and `false`) so rows created before an additive nullable migration remain readable. Use nullable `database/sql` value types when the distinction between `NULL` and a zero value matters.
+```go
+type User struct {
+	activeso.Record `activeso:"timestamps"`
 
-ActiveSo supports `sql.NullString` as `TEXT`, `sql.NullInt64` as `INTEGER`, `sql.NullFloat64` as `REAL`, and `sql.NullBool` as `INTEGER`. Use `sql.NullString` when your application needs to preserve the distinction between a missing string and an empty string. Import `database/sql` and use it directly in the model; ActiveSo retains `Valid` when loading and saving:
+	ID    string `db:"id"`
+	Email string `db:"email"`
+}
+```
+
+With the hint, ActiveSo **expects the table to have `created_at` and `updated_at` columns** holding UTC timestamp text. `Create` stamps both with `CURRENT_TIMESTAMP`, `Save` stamps `updated_at` and never rewrites `created_at`, and reads populate the Go fields. The columns need no defaults or triggers. If either column is missing, the first operation fails with an `activeso.ErrSchemaMismatch` error that names `created_at` and `updated_at`; a stored value that is not valid UTC timestamp text (`YYYY-MM-DD HH:MM:SS` or RFC3339) fails when read with an error that names the same columns. Without the hint, ActiveSo never touches those columns and `CreatedAt` and `UpdatedAt` stay zero. A struct field cannot map to `created_at` or `updated_at` when the hint is set.
+
+Timestamps are metadata written by ActiveSo, not an authorization boundary. Writes made with raw SQL outside ActiveSo do not refresh `updated_at`, and `Bind` attaches persistence behavior without loading timestamps.
+
+### NULL handling
+
+When loading a plain Go `string`, ActiveSo reads SQL `NULL` as `""`. A plain string write always stores text, so `NULL` and an empty string become indistinguishable after the value is loaded or saved.
+
+Plain numeric and boolean fields also read `NULL` as their Go zero values (`0`, `0.0`, and `false`), so rows that predate a nullable column remain readable. Use nullable `database/sql` value types when the distinction between `NULL` and a zero value matters.
+
+ActiveSo supports `sql.NullString` as `TEXT`, `sql.NullInt64` as `INTEGER`, `sql.NullFloat64` as `REAL`, and `sql.NullBool` as `INTEGER`. ActiveSo retains `Valid` when loading and saving:
 
 ```go
 type User struct {
@@ -136,49 +154,39 @@ type User struct {
 
 `sql.NullString{Valid: false}` represents SQL `NULL`; `sql.NullString{String: "", Valid: true}` represents an empty string.
 
-## Constraint options
+## Hints
 
-Add comma-separated constraint options in an `activeso` struct tag:
+Hints describe what your table already enforces and how its records relate. Add comma-separated hints in an `activeso` struct tag:
 
 ```go
 type City struct {
 	activeso.Record
 
 	ID       string `db:"id"`
-	Name     string `db:"name"`
+	Name     string `db:"name" activeso:"not_null,index"`
 	RegionID string `db:"region_id" activeso:"belongs_to=regions(id)"`
 }
 ```
 
-| Option | `AutoMigrate(ctx)` behavior | Write behavior |
+Hints never change the database. An unknown or malformed hint makes `activeso.Model[T](db)` panic, so mistakes surface during setup.
+
+| Hint | Meaning | Runtime behavior |
 | --- | --- | --- |
-| `not_null` | Adds `NOT NULL` when creating a table. ActiveSo refuses to add a new required column to an existing table automatically. | Turso rejects `NULL` values. |
-| `unique` | Creates a stable, unambiguous unique index for the table and column. | `Create` and `Save` check for an existing value first and return an error matching `activeso.ErrUnique`; the Turso index remains the concurrency-safe authority. |
-| `unique_with=column[+column...]` | Creates a stable composite unique index beginning with the tagged field followed by the named mapped columns. | Turso rejects duplicate combinations with an error matching `activeso.ErrUnique`. |
-| `index` | Creates a stable, unambiguous non-unique index for the table and column. | Makes equality lookups such as `FindBy` eligible to use a Turso index. |
-| `primary_key` | Declares the field as the table primary key. | Selects the identity used by `Find`, `Save`, and `Delete`; the field must use a supported immutable scalar type. |
-| `belongs_to=table(column)` | Adds `REFERENCES table(column)` when creating a table or adding a missing nullable column. It does not attach a foreign key to an existing column. | Turso rejects non-`NULL` values that do not exist in the referenced column when foreign-key enforcement is enabled. |
-| `on_delete=cascade` | Adds `ON DELETE CASCADE` to a `belongs_to` foreign key created on the same field. Requires `belongs_to`; it does not change an existing foreign key. | Deleting the referenced row also deletes matching rows in this table when foreign-key enforcement is enabled. |
+| `primary_key` | The field is the table's primary key. | Selects the identity used by `Find`, `Save`, `Delete`, and `Bind`. The field must use a supported immutable scalar type. |
+| `unique` | A unique index covers exactly this column. | When Turso rejects a write for violating it, `Create` and `Save` return an error matching `activeso.ErrUnique` that is also an `activeso.UniqueError` naming the column. |
+| `unique_with=column[+column...]` | A composite unique index begins with this column and continues with the named columns, in order. Do not repeat the tagged column in the list. | Turso rejects duplicate combinations with an error matching `activeso.ErrUnique`. |
+| `index` | An index begins with this column. | `Verify` checks it. It makes `FindBy` lookups eligible to use the index. |
+| `not_null` | The column is declared `NOT NULL`. | `Verify` checks it. Turso rejects `NULL` values. |
+| `belongs_to=table(column)` | The column has a foreign key to `table(column)`. | `Verify` checks it. With foreign-key enforcement enabled, Turso rejects non-`NULL` values missing from the referenced column. |
+| `on_delete=cascade` | The `belongs_to` foreign key uses `ON DELETE CASCADE`. Requires `belongs_to` on the same field. | `Verify` checks it. With enforcement enabled, deleting a referenced row also deletes its matching child rows. |
+
+On the embedded `Record`, the only hint is [`timestamps`](#timestamps).
 
 If no field has `primary_key`, ActiveSo uses the field mapped to `id`. Exactly one primary key is required. Supported primary-key types are strings, booleans, signed integers, `uint8`, `uint16`, `uint32`, and floats. `uint` and `uint64` are rejected because their full range cannot be represented by Turso's signed 64-bit `INTEGER`.
 
-`belongs_to` targets must use simple identifiers in `table(column)` form. An unknown or malformed `activeso` constraint causes `activeso.Model[T](db)` to panic so schema mistakes are caught during setup.
+`belongs_to` targets must use simple identifiers in `table(column)` form. A primary key satisfies `not_null` and `index`.
 
-`belongs_to=table(column)` creates an inline foreign key on the tagged scalar column. For example, `RegionID` above becomes `region_id TEXT REFERENCES regions(id)`. Add `not_null` when the relationship is required:
-
-```go
-RegionID string `db:"region_id" activeso:"not_null,belongs_to=regions(id)"`
-```
-
-To delete child rows when their referenced row is deleted, add `on_delete=cascade` on the same field:
-
-```go
-RegionID string `db:"region_id" activeso:"belongs_to=regions(id),on_delete=cascade"`
-```
-
-Changing the tag on an existing foreign key does not alter its database constraint; that requires a dedicated schema migration.
-
-Use `unique_with` when a combination of fields, rather than one field alone, must be unique. The tagged field is the first index column and named columns follow it in the listed order:
+Use `unique_with` when a combination of fields, rather than one field alone, must be unique:
 
 ```go
 type OrganizationCustomer struct {
@@ -190,25 +198,11 @@ type OrganizationCustomer struct {
 }
 ```
 
-`AutoMigrate(ctx)` creates a unique index on `(customer_id, organization_id)`, preventing a customer from joining the same organization twice while allowing that customer to join other organizations. Keep the individual `index` tags when `FindBy` queries either column independently.
-
-To remove a `unique_with` constraint, remove the tag first and then run the explicit migration with columns in the same order. The columns may be omitted from the current model, allowing an index to be removed before a later `DropColumn` migration:
-
-```go
-membershipModel := activeso.Model[OrganizationCustomer](db)
-if err := membershipModel.DropUniqueWith(ctx, "customer_id", "organization_id"); err != nil {
-	return err
-}
+```sql
+CREATE UNIQUE INDEX memberships_customer_organization ON organization_customers (customer_id, organization_id);
 ```
 
-`AutoMigrate(ctx)` rejects an implicit removal and directs callers to `DropUniqueWith`.
-
-## References
-
-- [Turso Go SDK](https://docs.turso.tech/sdk/go)
-- [SQLite foreign-key support](https://www.sqlite.org/foreignkeys.html)
-
-Enable foreign-key enforcement after opening the Turso database connection:
+Foreign-key enforcement is a connection setting in SQLite-compatible databases. Enable it after opening the database, and make sure every pooled connection is configured:
 
 ```go
 db := sql.OpenDB(connector)
@@ -217,15 +211,33 @@ if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 }
 ```
 
-`PRAGMA foreign_keys` is connection-specific in SQLite-compatible databases. Enable it before using models with `belongs_to=table(column)` constraints; if an application uses a connection pool, ensure every connection is configured accordingly.
+## Verifying your schema
+
+Because ActiveSo trusts your tables, it can check that they match your model. There are two levels:
+
+- **Automatic structural check.** The first `Create`, `Find`, query, `Save`, or `Delete` on a model checks that the table and every mapped column exist, that the `timestamps` columns exist when that hint is set, and that the primary-key column is a `PRIMARY KEY` or has a single-column unique index. A failure returns an `*activeso.SchemaError` and is retried on the next call, so a table created later is picked up. A passing check is remembered for the model's lifetime, so create a model once and reuse it.
+- **Full check with `Verify(ctx)`.** It adds everything the automatic check skips: column types against Go types, and every `not_null`, `unique`, `unique_with`, `index`, `belongs_to`, and `on_delete=cascade` hint. Call it at startup or in a test. It only reads schema metadata and never changes the database.
+
+```go
+if err := userModel.Verify(ctx); err != nil {
+	var schemaError *activeso.SchemaError
+	if errors.As(err, &schemaError) {
+		for _, problem := range schemaError.Problems {
+			log.Println(problem)
+		}
+	}
+	return err
+}
+```
+
+`SchemaError` matches `activeso.ErrSchemaMismatch` with `errors.Is` and lists every problem found, for example `hint unique on email, but no unique index covers exactly that column`.
 
 ## API
 
 ### Contents
 
 - [Model](#model)
-- [AutoMigrate](#automigrate)
-- [Explicit migrations](#explicit-migrations)
+- [Verify](#verify)
 - [Create](#create)
 - [Find](#find)
 - [FindBy](#findby)
@@ -247,48 +259,15 @@ if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 userModel := activeso.Model[User](db)
 ```
 
-### AutoMigrate
+### Verify
 
-`AutoMigrate(ctx)` creates the table, adds missing nullable columns, and creates tagged unique and ordinary indexes. Call it once during application setup or deployment, separately from normal record operations.
-
-For an existing table, the model's ID column must be protected by a sole primary key or a single-column unique index. ActiveSo rejects composite primary keys that do not make the modeled ID independently unique, preventing `Save` and `Delete` from targeting multiple rows.
+`Verify(ctx)` compares the live table with the model's `db` tags and hints and returns an `*activeso.SchemaError` listing every mismatch. See [Verifying your schema](#verifying-your-schema).
 
 ```go
-if err := userModel.AutoMigrate(ctx); err != nil {
+if err := userModel.Verify(ctx); err != nil {
 	return err
 }
 ```
-
-### Explicit migrations
-
-`AutoMigrate(ctx)` is intentionally additive and safe: it never drops data, removes indexes, changes column types, or tightens existing constraints. When it detects a destructive change it can identify safely, its error directs you to the matching explicit API: a new `not_null` field or an existing nullable field made `not_null` requires a nullable addition, a backfill, and `SetNotNull(ctx, column)`; a changed non-primary-key storage type requires `ChangeColumnType(ctx, column)`; a primary-key type change requires a dedicated manual migration; and removing `unique` requires `DropUnique(ctx, column)` when ActiveSo's managed index exists. Make destructive schema changes deliberately by first updating the model definition, then calling the matching operation during deployment. Removing a model field is not treated as a drop request because ActiveSo intentionally supports database columns that are omitted from the Go struct; call `DropColumn(ctx, column)` explicitly.
-
-| Operation | Required model change | Effect |
-| --- | --- | --- |
-| `DropUnique(ctx, column)` | Remove `unique` from the column's `activeso` tag. | Drops ActiveSo's named unique index. |
-| `DropColumn(ctx, column)` | Remove the field from the model. | Rebuilds the table without the column. |
-| `ChangeColumnType(ctx, column)` | Change the Go field's type. | Rebuilds the table using the newly inferred Turso column type. |
-| `SetNotNull(ctx, column)` | Add `not_null` to the field's `activeso` tag. | Rebuilds the table with `NOT NULL`; it fails if any existing row contains `NULL`. |
-
-For example, to stop requiring unique emails, remove `unique` from the tag and run an explicit migration:
-
-```go
-type User struct {
-	activeso.Record
-
-	ID    string `db:"id"`
-	Email string `db:"email" activeso:"not_null"`
-}
-
-userModel := activeso.Model[User](db)
-if err := userModel.DropUnique(ctx, "email"); err != nil {
-	return err
-}
-```
-
-Each column migration changes only its named target. Existing columns omitted from your Go struct, their data, and unrelated defaults, constraints, and indexes are preserved. For example, `ChangeColumnType(ctx, "email")` leaves an existing `nickname` column intact even if the struct no longer contains it. Removing a struct field alone never drops its database column; call `DropColumn` explicitly.
-
-These operations rebuild the existing database schema inside a transaction. Unsupported dependencies cause an error, and failed migrations roll back. Remove indexes or constraints referencing a column before dropping it. Rebuilds currently reject dependent views/triggers, foreign keys involving the table, generated columns, autoincrement columns, primary-key type changes, and dropping inline primary-key columns; those require a dedicated migration. Explicit NULL expressions and fully shadowed row IDs can also require a dedicated migration. Run destructive migrations during a controlled deployment and back up production data first.
 
 ### Create
 
@@ -308,7 +287,7 @@ user, err := userModel.Find(ctx, "8b291a21-e69b-47ed-a3e0-f43e7609b26d")
 
 ### FindBy
 
-`FindBy(ctx, column, value)` loads every record whose mapped `column` equals `value`. The column name must exist on the model, so ActiveSo quotes it safely rather than accepting arbitrary SQL. Add `index` to frequently searched non-unique fields:
+`FindBy(ctx, column, value)` loads every record whose mapped `column` equals `value`. The column name must exist on the model, so ActiveSo quotes it safely rather than accepting arbitrary SQL. Index frequently searched non-unique columns in your schema and mark them with the `index` hint:
 
 ```go
 type City struct {
@@ -396,7 +375,7 @@ user, err := userModel.Where("email LIKE ?", "%@null.live").
 
 ### Bind
 
-`Bind(value)` attaches persistence behavior to an existing record pointer, such as one loaded outside ActiveSo.
+`Bind(value)` attaches persistence behavior to an existing record pointer, such as one loaded outside ActiveSo. It does not load timestamps.
 
 ```go
 externalUser := &User{ID: "8b291a21-e69b-47ed-a3e0-f43e7609b26d", Email: "hello@null.live"}
@@ -405,7 +384,7 @@ user, err := userModel.Bind(externalUser)
 
 ### Save
 
-`Save(ctx)` updates all persisted fields except the primary key. It is available on records returned by `Create`, `Find`, query methods, or `Bind`. 
+`Save(ctx)` updates all persisted fields except the primary key. It is available on records returned by `Create`, `Find`, query methods, or `Bind`. A record loaded outside ActiveSo must be attached with `Bind` first; an unbound record's `Save` and `Delete` return `activeso.ErrUnboundRecord`.
 
 A record's ID is captured when it becomes bound and cannot be changed. If you modify it, `Save` and `Delete` return `activeso.ErrIDChanged`; create a new record when you need a new identity.
 
@@ -422,9 +401,38 @@ err := user.Save(ctx)
 err := user.Delete(ctx)
 ```
 
+## Upgrading from 1.x
+
+ActiveSo 2.0 removes all schema management. Plan these changes together:
+
+1. **Import path.** The module is now `github.com/sectionco/activeso/v2`.
+2. **Remove migration calls.** `AutoMigrate`, `DropUnique`, `DropUniqueWith`, `DropColumn`, `ChangeColumnType`, and `SetNotNull` no longer exist. Existing tables keep working; changes to them are yours to write.
+3. **Tag every field with `db`.** Fields that relied on derived snake_case names now panic at `Model` setup until they are tagged.
+4. **Rename constraints to hints.** The tag syntax is unchanged, but hints no longer create anything. `unique`, `unique_with`, `index`, `not_null`, `belongs_to`, and `on_delete=cascade` are checked by `Verify`.
+5. **Unique errors come from the database.** `Create` and `Save` no longer run a check-then-write query first. Keep the unique index in your schema; a missing index means duplicates are accepted. `Verify` reports it.
+6. **Timestamps are opt-in and renamed.** Add `activeso:"timestamps"` to the embedded `Record` to keep `CreatedAt` and `UpdatedAt`. The columns are now `created_at` and `updated_at`, and ActiveSo stamps them in its own SQL instead of using triggers.
+
+To move a 1.x database to the new timestamp columns, drop ActiveSo's triggers first (renaming a column rewrites trigger bodies, and the old triggers would then refer to columns that no longer exist), then rename the columns. Trigger names are `activeso_<hex of the lowercase table name>_timestamps_` followed by `insert`, `update`, `protect_created_at`, or `protect_updated_at`; list them with `SELECT name FROM sqlite_schema WHERE type = 'trigger'`.
+
+```sql
+DROP TRIGGER IF EXISTS activeso_7573657273_timestamps_insert;
+DROP TRIGGER IF EXISTS activeso_7573657273_timestamps_update;
+DROP TRIGGER IF EXISTS activeso_7573657273_timestamps_protect_created_at;
+DROP TRIGGER IF EXISTS activeso_7573657273_timestamps_protect_updated_at;
+ALTER TABLE users RENAME COLUMN activeso_created_at TO created_at;
+ALTER TABLE users RENAME COLUMN activeso_updated_at TO updated_at;
+```
+
+Indexes that 1.x created (named like `activeso_<hex>_<hex>_unique`) keep working and need no changes. Back up production data before running any migration, and never open a live synced replica with a plain non-sync connection or the SQLite CLI; use the sync SDK or an offline copy.
+
+## References
+
+- [Turso Go SDK](https://docs.turso.tech/sdk/go)
+- [SQLite foreign-key support](https://www.sqlite.org/foreignkeys.html)
+
 ## Browser example
 
-The `example/` directory contains a small Echo v5 server with a single HTML page for creating, editing, and deleting users. It creates a local `activeso-example.db` file and listens on [http://localhost:8080](http://localhost:8080).
+The `example/` directory contains a small Echo v5 server with a single HTML page for creating, editing, and deleting users. It creates its own schema in a local `activeso-example.db` file and listens on [http://localhost:8080](http://localhost:8080).
 
 ```sh
 go -C example run .
