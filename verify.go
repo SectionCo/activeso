@@ -52,16 +52,17 @@ func (model *model[T]) Verify(ctx context.Context) error {
 
 // ensureReady runs the structural part of Verify once per model before its first database operation.
 // A failed check is not cached, so a table created afterwards is picked up on the next call.
+// A passing check made through a Using view is not cached either, because an open transaction can see uncommitted DDL that may roll back.
 func (model *model[T]) ensureReady(ctx context.Context) error {
 	// Initialize Variables
 	var problems []string
 	var err error
 
-	model.readyMutex.Lock()
-	defer model.readyMutex.Unlock()
+	model.readiness.mutex.Lock()
+	defer model.readiness.mutex.Unlock()
 
 	// Skip the inspection once the table has matched the model.
-	if model.ready {
+	if model.readiness.ready {
 		return nil
 	}
 	problems, err = model.schemaProblems(ctx, false)
@@ -71,7 +72,10 @@ func (model *model[T]) ensureReady(ctx context.Context) error {
 	if len(problems) > 0 {
 		return &SchemaError{Table: model.tableName, Problems: problems}
 	}
-	model.ready = true
+	// Only the root executor may record a pass; scoped views re-inspect until it does.
+	if !model.scoped {
+		model.readiness.ready = true
+	}
 
 	return nil
 }
@@ -273,7 +277,7 @@ func sameColumns(left, right []string) bool {
 func (model *model[T]) inspectTable(ctx context.Context) (tableSchema, bool, error) {
 	// Initialize Variables
 	schema := tableSchema{columns: make(map[string]columnInfo)}
-	rows, err := model.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(model.tableName)))
+	rows, err := model.exec.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(model.tableName)))
 
 	if err != nil {
 		return schema, false, fmt.Errorf("activeso: inspect table %s: %w", model.tableName, err)
@@ -317,7 +321,7 @@ func (model *model[T]) inspectTable(ctx context.Context) (tableSchema, bool, err
 // inspectIndexes returns every index on the model's table with its ordered columns.
 func (model *model[T]) inspectIndexes(ctx context.Context) ([]indexInfo, error) {
 	// Initialize Variables
-	rows, err := model.db.QueryContext(ctx, fmt.Sprintf("PRAGMA index_list(%s)", quoteIdentifier(model.tableName)))
+	rows, err := model.exec.QueryContext(ctx, fmt.Sprintf("PRAGMA index_list(%s)", quoteIdentifier(model.tableName)))
 	var names []string
 	var indexes []indexInfo
 
@@ -358,7 +362,7 @@ func (model *model[T]) inspectIndexes(ctx context.Context) ([]indexInfo, error) 
 // indexColumns returns the ordered columns of one index, skipping expression entries.
 func (model *model[T]) indexColumns(ctx context.Context, name string) ([]string, error) {
 	// Initialize Variables
-	rows, err := model.db.QueryContext(ctx, fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(name)))
+	rows, err := model.exec.QueryContext(ctx, fmt.Sprintf("PRAGMA index_info(%s)", quoteIdentifier(name)))
 	var columns []string
 
 	if err != nil {
@@ -384,7 +388,7 @@ func (model *model[T]) indexColumns(ctx context.Context, name string) ([]string,
 // inspectForeignKeys returns the foreign keys declared on the model's table.
 func (model *model[T]) inspectForeignKeys(ctx context.Context) ([]foreignKeyInfo, error) {
 	// Initialize Variables
-	rows, err := model.db.QueryContext(ctx, fmt.Sprintf("PRAGMA foreign_key_list(%s)", quoteIdentifier(model.tableName)))
+	rows, err := model.exec.QueryContext(ctx, fmt.Sprintf("PRAGMA foreign_key_list(%s)", quoteIdentifier(model.tableName)))
 	var keys []foreignKeyInfo
 
 	if err != nil {
@@ -426,7 +430,7 @@ func (model *model[T]) inspectForeignKeys(ctx context.Context) ([]foreignKeyInfo
 // primaryKeyColumn returns the sole primary-key column of table, or "" when it is missing, composite, or has none.
 func (model *model[T]) primaryKeyColumn(ctx context.Context, table string) (string, error) {
 	// Initialize Variables
-	rows, err := model.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(table)))
+	rows, err := model.exec.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoteIdentifier(table)))
 	primaryKeys := []string(nil)
 
 	if err != nil {

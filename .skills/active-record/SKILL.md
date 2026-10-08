@@ -17,6 +17,8 @@ Supported hints are `primary_key`, `unique`, `unique_with`, `index`, `not_null`,
 
 When scanning SQL data into a plain Go string field, ActiveSo uses `sql.NullString` internally and maps SQL `NULL` to `""`. Plain Go strings cannot represent the difference between NULL and an empty string; subsequent saves write `""`. Models may use `sql.NullString` directly when they need to preserve the distinction.
 
+Models have `CreateTx` and `FindTx`, and records have `SaveTx` and `DeleteTx`, for a single call on a transaction; `model.Using(tx)` returns a transaction-scoped view for queries and multi-step work (see `../transactions/SKILL.md`).
+
 Binding captures a record's primary-key value. Changing a bound record's ID makes `Save` and `Delete` return `ErrIDChanged`, preventing the operation from targeting another row.
 
 ## Turso vectors
