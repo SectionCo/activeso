@@ -9,7 +9,7 @@
 
 ## Readiness caching
 
-`ensureReady` caches a passing structural check in the shared `readiness`, but only when run through the root executor (`scoped == false`). A scoped view that passes still re-inspects next time, because a transaction can see uncommitted DDL. `TestScopedViewDoesNotCacheReadiness` covers this. A model whose first and only operations are `Using`/`SaveTx` calls therefore pays the PRAGMA inspection on each call; run one non-transaction operation or `Verify` first to warm it.
+`ensureReady` caches a passing structural check in the shared `readiness`, but only when run through the root executor (`scoped == false`). A scoped view that passes still re-inspects next time, because a transaction can see uncommitted DDL. `TestScopedViewDoesNotCacheReadiness` covers this. A model whose first and only operations are `Using`/`SaveTx` calls therefore pays the PRAGMA inspection on each call; run one non-transaction operation or a root `Verify` first to warm it. A `Verify` that returns no problems through the root executor sets the shared `ready` flag (a full pass implies the structural check passed); a failed `Verify`, or one run through a `Using` view, never does (`TestVerifyWarmsReadinessOnlyForRootPasses`).
 
 ## Verified Turso behavior
 

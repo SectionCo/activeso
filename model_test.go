@@ -1395,3 +1395,46 @@ func TestScopedViewDoesNotWaitBehindRootInspection(t *testing.T) {
 		t.Fatalf("root All() error = %v", err)
 	}
 }
+
+// TestVerifyWarmsReadinessOnlyForRootPasses verifies a clean root Verify skips later inspections and nothing else does.
+func TestVerifyWarmsReadinessOnlyForRootPasses(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+
+	execStatements(t, db, usersSchema)
+
+	// A clean Verify through a transaction view must not warm the model.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if err := userModel.Using(tx).Verify(ctx); err != nil {
+		t.Fatalf("Using().Verify() error = %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if userModel.readiness.ready.Load() {
+		t.Fatal("Using().Verify() marked the model ready")
+	}
+
+	// Hint drift fails Verify, so it must not warm the model either.
+	driftModel := Model[Membership](db)
+	execStatements(t, db, `CREATE TABLE memberships (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL)`)
+	if err := driftModel.Verify(ctx); err == nil {
+		t.Fatal("Verify() with drift returned no error")
+	}
+	if driftModel.readiness.ready.Load() {
+		t.Fatal("a failed Verify() marked the model ready")
+	}
+
+	// A clean root Verify warms the model.
+	if err := userModel.Verify(ctx); err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !userModel.readiness.ready.Load() {
+		t.Fatal("Verify() did not mark the model ready")
+	}
+}

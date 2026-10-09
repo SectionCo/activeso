@@ -36,6 +36,7 @@ type tableSchema struct {
 
 // Verify compares the live table with the model's hints and reports every mismatch without changing the database.
 // Missing tables, columns, timestamp columns, and primary-key protection are always reported; hint drift is reported here only.
+// A clean result through the root executor also marks the model ready, so later operations skip their first-use inspection.
 func (model *model[T]) Verify(ctx context.Context) error {
 	// Initialize Variables
 	problems, err := model.schemaProblems(ctx, true)
@@ -45,6 +46,10 @@ func (model *model[T]) Verify(ctx context.Context) error {
 	}
 	if len(problems) > 0 {
 		return &SchemaError{Table: model.tableName, Problems: problems}
+	}
+	// A full pass implies the structural check passed; scoped views never record it, as in ensureReady.
+	if !model.scoped {
+		model.readiness.ready.Store(true)
 	}
 
 	return nil

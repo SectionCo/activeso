@@ -270,7 +270,7 @@ if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 Because ActiveSo trusts your tables, it can check that they match your model. There are two levels:
 
 - **Automatic structural check.** The first `Create`, `Find`, query, `Save`, or `Delete` on a model checks that the table and every mapped column exist, that the `timestamps` columns exist when that hint is set, and that the primary-key column is a `PRIMARY KEY` or has a single-column unique index. A failure returns an `*activeso.SchemaError` and is retried on the next call, so a table created later is picked up. A passing check is remembered for the model's lifetime, so create a model once and reuse it.
-- **Full check with `Verify(ctx)`.** It adds everything the automatic check skips: column types against Go types (a field type ActiveSo cannot map to a column is reported unless it implements `driver.Valuer` and `sql.Scanner`), and every `not_null`, `unique`, `unique_with`, `index`, `belongs_to`, and `on_delete=cascade` hint. Call it at startup or in a test. It only reads schema metadata and never changes the database.
+- **Full check with `Verify(ctx)`.** It adds everything the automatic check skips: column types against Go types (a field type ActiveSo cannot map to a column is reported unless it implements `driver.Valuer` and `sql.Scanner`), and every `not_null`, `unique`, `unique_with`, `index`, `belongs_to`, and `on_delete=cascade` hint. Call it at startup or in a test. It only reads schema metadata and never changes the database. A clean result also lets later operations skip their first-use structural check, which matters most for transaction calls (see [Transactions](#transactions)).
 
 ```go
 if err := userModel.Verify(ctx); err != nil {
