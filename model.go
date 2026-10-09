@@ -49,9 +49,11 @@ type model[T any] struct {
 	idField    field
 	timestamps bool
 
-	// readiness is shared by every Using view; scoped views never record a passing check.
+	// readiness is shared by views of the same database. scoped is true for executors that may see uncommitted
+	// state (*sql.Tx, *sql.Conn) and so never record a passing check; rootPool identifies the model's own *sql.DB.
 	readiness *readiness
 	scoped    bool
+	rootPool  *sql.DB
 }
 
 type query[T any] struct {
@@ -133,18 +135,24 @@ func (model *model[T]) FindTx(ctx context.Context, tx Executor, id any) (*T, err
 	return record, nil
 }
 
-// viewOn copies the model onto exec, sharing metadata and readiness, and rejects a nil executor.
+// viewOn copies the model onto exec and rejects a nil executor.
+// A *sql.Tx or *sql.Conn shares the original's metadata and readiness, so it must target the model's own database.
+// A different *sql.DB is another database, so it gets its own readiness and is inspected and cached separately.
 func (model *model[T]) viewOn(exec Executor) (*model[T], error) {
 	// Initialize Variables
 	view := *model
+	pool, isPool := exec.(*sql.DB)
 
 	if nilExecutor(exec) {
 		return nil, errors.New("activeso: transaction executor is nil")
 	}
 
-	// Only the executor differs from the original model.
 	view.exec = exec
-	view.scoped = true
+	// Only a pool sees committed state, so only a pool may record a passing check.
+	view.scoped = !isPool
+	if isPool && pool != model.rootPool {
+		view.readiness = &readiness{}
+	}
 	return &view, nil
 }
 
@@ -502,6 +510,7 @@ func newModel[T any](db Executor) (*model[T], error) {
 	// Initialize Variables
 	typeOfT := reflect.TypeFor[T]()
 	model := &model[T]{exec: db, readiness: &readiness{}}
+	rootPool, isPool := db.(*sql.DB)
 	fields := make([]field, 0, typeOfT.NumField())
 	columns := make(map[string]struct{}, typeOfT.NumField())
 	explicitPrimaryKeyCount := 0
@@ -588,6 +597,9 @@ func newModel[T any](db Executor) (*model[T], error) {
 
 	model.tableName = tableName[T](typeOfT)
 	model.fields = fields
+	// A model built on a transaction or connection never records a passing check; only a pool does.
+	model.rootPool = rootPool
+	model.scoped = !isPool
 	return model, nil
 }
 

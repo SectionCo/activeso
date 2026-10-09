@@ -9,7 +9,11 @@
 
 ## Readiness caching
 
-`ensureReady` caches a passing structural check in the shared `readiness`, but only when run through the root executor (`scoped == false`). A scoped view that passes still re-inspects next time, because a transaction can see uncommitted DDL. `TestScopedViewDoesNotCacheReadiness` covers this. A model whose first and only operations are `Using`/`SaveTx` calls therefore pays the PRAGMA inspection on each call; run one non-transaction operation or a root `Verify` first to warm it. A `Verify` that returns no problems through the root executor sets the shared `ready` flag (a full pass implies the structural check passed); a failed `Verify`, or one run through a `Using` view, never does (`TestVerifyWarmsReadinessOnlyForRootPasses`).
+`ensureReady` caches a passing structural check in the shared `readiness`, but only an executor that is a `*sql.DB` records it (`scoped == false`). A `*sql.Tx` or `*sql.Conn` view, or a model built directly on one, may see uncommitted DDL that can roll back, so it never records a pass (`TestScopedViewDoesNotCacheReadiness`, `TestModelBuiltOnTransactionNeverCachesReadiness`). Scoped views do read a pass the root already recorded.
+
+**Contract:** a `*sql.Tx` or `*sql.Conn` passed to `Using` or a `*Tx` method must target the model's own database. `sql.Tx` exposes no parent, so ActiveSo cannot check this. A different `*sql.DB` is detectable: `viewOn` gives it its own `readiness`, so it is inspected and cached separately and the original pool's pass is never trusted for it (`TestUsingAnotherPoolInspectsItsOwnSchema`). The model's own `*sql.DB` (`rootPool`) shares the original `readiness`. Uncommitted DDL inside a transaction after the root has passed is not re-detected, which is no weaker than the existing behavior for schema changes made by another connection after the first check.
+
+A model whose first and only operations are `Using`/`*Tx` calls pays the PRAGMA inspection on each call; run one non-transaction operation or a root `Verify` first to warm it. A `Verify` that returns no problems through the root executor sets the shared `ready` flag (a full pass implies the structural check passed); a failed `Verify`, or one run through a `Using` view, never does (`TestVerifyWarmsReadinessOnlyForRootPasses`).
 
 ## Verified Turso behavior
 

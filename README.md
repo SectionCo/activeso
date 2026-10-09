@@ -187,6 +187,8 @@ if err := user.SaveTx(ctx, tx); err != nil {
 return tx.Commit()
 ```
 
+A `*sql.Tx` or `*sql.Conn` you pass must belong to the same database as the model; ActiveSo cannot check this. To use a model with a different database, pass that `*sql.DB` to `Using`, which inspects and caches its schema separately.
+
 Records returned by the `Tx` methods stay bound to the original model, so a later plain `Save` or `Delete` runs on the model's own database, not on the finished transaction.
 
 ### More complex transactions

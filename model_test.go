@@ -1438,3 +1438,64 @@ func TestVerifyWarmsReadinessOnlyForRootPasses(t *testing.T) {
 		t.Fatal("Verify() did not mark the model ready")
 	}
 }
+
+// TestUsingAnotherPoolInspectsItsOwnSchema verifies a different *sql.DB is not trusted because the root passed.
+func TestUsingAnotherPoolInspectsItsOwnSchema(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	primary := openTestDatabase(t)
+	other := openTestDatabase(t)
+	userModel := Model[User](primary)
+
+	// The primary database has the table and warms the model; the other does not have it.
+	execStatements(t, primary, usersSchema)
+	if _, err := userModel.All(ctx); err != nil {
+		t.Fatalf("All() error = %v", err)
+	}
+	if !userModel.readiness.ready.Load() {
+		t.Fatal("All() did not mark the model ready")
+	}
+	if _, err := userModel.Using(other).All(ctx); !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("Using(other).All() error = %v, want ErrSchemaMismatch", err)
+	}
+
+	// The other pool is cached on its own once it matches, without touching the original.
+	execStatements(t, other, usersSchema)
+	otherView := userModel.Using(other)
+	if _, err := otherView.All(ctx); err != nil {
+		t.Fatalf("Using(other).All() after creating the table error = %v", err)
+	}
+	if !otherView.readiness.ready.Load() {
+		t.Fatal("Using(other).All() did not mark the other pool ready")
+	}
+	if otherView.readiness == userModel.readiness {
+		t.Fatal("Using(other) shares readiness with the original pool")
+	}
+
+	// The model's own pool keeps sharing its readiness.
+	if userModel.Using(primary).readiness != userModel.readiness {
+		t.Fatal("Using(primary) does not share the original readiness")
+	}
+}
+
+// TestModelBuiltOnTransactionNeverCachesReadiness verifies only a *sql.DB executor records a passing check.
+func TestModelBuiltOnTransactionNeverCachesReadiness(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	execStatements(t, db, `CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT)`)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	defer tx.Rollback()
+
+	txModel := Model[Region](tx)
+	if _, err := txModel.All(ctx); err != nil {
+		t.Fatalf("All() error = %v", err)
+	}
+	if txModel.readiness.ready.Load() {
+		t.Fatal("a model built on a transaction recorded a passing check")
+	}
+}
