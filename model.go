@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -44,14 +43,17 @@ const (
 )
 
 type model[T any] struct {
-	db         *sql.DB
+	exec       Executor
 	tableName  string
 	fields     []field
 	idField    field
 	timestamps bool
 
-	readyMutex sync.Mutex
-	ready      bool
+	// readiness is shared by views of the same database. scoped is true for executors that may see uncommitted
+	// state (*sql.Tx, *sql.Conn) and so never record a passing check; rootPool identifies the model's own *sql.DB.
+	readiness *readiness
+	scoped    bool
+	rootPool  *sql.DB
 }
 
 type query[T any] struct {
@@ -63,9 +65,9 @@ type query[T any] struct {
 	limit            int
 }
 
-// Model binds an application-defined struct type to an existing Turso table using db.
+// Model binds an application-defined struct type to an existing Turso table using db, normally a *sql.DB.
 // T must embed activeso.Record, tag every persisted field with db, and expose one primary_key field or an id column.
-func Model[T any](db *sql.DB) *model[T] {
+func Model[T any](db Executor) *model[T] {
 	// Initialize Variables
 	model, err := newModel[T](db)
 
@@ -74,6 +76,96 @@ func Model[T any](db *sql.DB) *model[T] {
 	}
 
 	return model
+}
+
+// Using returns a view of the model that runs every operation on exec, such as a *sql.Tx.
+// Records created or loaded through the view stay bound to exec, so their Save and Delete use it too.
+func (model *model[T]) Using(exec Executor) *model[T] {
+	// Initialize Variables
+	view, err := model.viewOn(exec)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return view
+}
+
+// CreateTx behaves like Create but inserts on tx, such as a *sql.Tx, for this call only.
+// The returned record is bound to the original model, so a later Save uses the model's own executor.
+func (model *model[T]) CreateTx(ctx context.Context, tx Executor, value T) (*T, error) {
+	// Initialize Variables
+	view, err := model.viewOn(tx)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Create on the transaction, then point the record back at the unscoped model.
+	record, err := view.Create(ctx, value)
+	if err != nil {
+		return nil, err
+	}
+	if err := model.bind(record); err != nil {
+		return nil, err
+	}
+
+	return record, nil
+}
+
+// FindTx behaves like Find but reads on tx, such as a *sql.Tx, for this call only.
+// The returned record is bound to the original model, so a later Save uses the model's own executor.
+func (model *model[T]) FindTx(ctx context.Context, tx Executor, id any) (*T, error) {
+	// Initialize Variables
+	view, err := model.viewOn(tx)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Read on the transaction, then point the record back at the unscoped model.
+	record, err := view.Find(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := model.bind(record); err != nil {
+		return nil, err
+	}
+
+	return record, nil
+}
+
+// viewOn copies the model onto exec and rejects a nil executor.
+// A *sql.Tx or *sql.Conn shares the original's metadata and readiness, so it must target the model's own database.
+// A different *sql.DB is another database, so it gets its own readiness and is inspected and cached separately.
+func (model *model[T]) viewOn(exec Executor) (*model[T], error) {
+	// Initialize Variables
+	view := *model
+	pool, isPool := exec.(*sql.DB)
+
+	if nilExecutor(exec) {
+		return nil, errors.New("activeso: transaction executor is nil")
+	}
+
+	view.exec = exec
+	// Only a pool sees committed state, so only a pool may record a passing check.
+	view.scoped = !isPool
+	if isPool && pool != model.rootPool {
+		view.readiness = &readiness{}
+	}
+	return &view, nil
+}
+
+// using adapts viewOn to the recordBinding interface so records can borrow an executor for one call.
+func (model *model[T]) using(exec Executor) (recordBinding, error) {
+	// Initialize Variables
+	view, err := model.viewOn(exec)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return view, nil
 }
 
 // Create inserts value, generates an empty string ID, and returns a bound record.
@@ -102,7 +194,7 @@ func (model *model[T]) Create(ctx context.Context, value T) (*T, error) {
 	}
 
 	statement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdentifier(model.tableName), strings.Join(columns, ", "), strings.Join(expressions, ", "))
-	if _, err := model.db.ExecContext(ctx, statement, arguments...); err != nil {
+	if _, err := model.exec.ExecContext(ctx, statement, arguments...); err != nil {
 		return nil, fmt.Errorf("activeso: create %s: %w", model.tableName, model.uniqueWriteError(err))
 	}
 	if err := model.refreshTimestamps(ctx, record); err != nil {
@@ -207,7 +299,7 @@ func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	}
 
 	statement := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", quoteIdentifier(model.tableName), strings.Join(assignments, ", "), quoteIdentifier(model.idField.column))
-	result, err := model.db.ExecContext(ctx, statement, append(arguments, originalID)...)
+	result, err := model.exec.ExecContext(ctx, statement, append(arguments, originalID)...)
 	if err != nil {
 		return fmt.Errorf("activeso: save %s: %w", model.tableName, model.uniqueWriteError(err))
 	}
@@ -234,7 +326,7 @@ func (model *model[T]) recordExists(ctx context.Context, id any) error {
 	var err error
 
 	// Preserve Save's ErrNotFound behavior for ID-only models.
-	err = model.db.QueryRowContext(ctx, statement, id).Scan(&match)
+	err = model.exec.QueryRowContext(ctx, statement, id).Scan(&match)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -267,7 +359,7 @@ func (model *model[T]) delete(ctx context.Context, entity, originalID any) error
 	}
 
 	statement := fmt.Sprintf("DELETE FROM %s WHERE %s = ?", quoteIdentifier(model.tableName), quoteIdentifier(model.idField.column))
-	result, err := model.db.ExecContext(ctx, statement, originalID)
+	result, err := model.exec.ExecContext(ctx, statement, originalID)
 	if err != nil {
 		return fmt.Errorf("activeso: delete %s: %w", model.tableName, err)
 	}
@@ -337,7 +429,7 @@ func (query *query[T]) All(ctx context.Context) ([]*T, error) {
 		return nil, err
 	}
 
-	rows, err := query.model.db.QueryContext(ctx, statement, arguments...)
+	rows, err := query.model.exec.QueryContext(ctx, statement, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("activeso: query %s: %w", query.model.tableName, err)
 	}
@@ -414,16 +506,17 @@ func (query *query[T]) selectStatement() string {
 }
 
 // newModel inspects T and constructs its immutable persistence metadata.
-func newModel[T any](db *sql.DB) (*model[T], error) {
+func newModel[T any](db Executor) (*model[T], error) {
 	// Initialize Variables
 	typeOfT := reflect.TypeFor[T]()
-	model := &model[T]{db: db}
+	model := &model[T]{exec: db, readiness: &readiness{}}
+	rootPool, isPool := db.(*sql.DB)
 	fields := make([]field, 0, typeOfT.NumField())
 	columns := make(map[string]struct{}, typeOfT.NumField())
 	explicitPrimaryKeyCount := 0
 
 	// Validate the model shape before extracting database fields.
-	if db == nil {
+	if nilExecutor(db) {
 		return nil, errors.New("activeso: model database is nil")
 	}
 	if typeOfT.Kind() != reflect.Struct {
@@ -504,6 +597,9 @@ func newModel[T any](db *sql.DB) (*model[T], error) {
 
 	model.tableName = tableName[T](typeOfT)
 	model.fields = fields
+	// A model built on a transaction or connection never records a passing check; only a pool does.
+	model.rootPool = rootPool
+	model.scoped = !isPool
 	return model, nil
 }
 
@@ -1146,7 +1242,7 @@ func (model *model[T]) refreshTimestamps(ctx context.Context, record *T) error {
 	if err != nil {
 		return err
 	}
-	if err := model.db.QueryRowContext(ctx, statement, id).Scan(&createdAt, &updatedAt); err != nil {
+	if err := model.exec.QueryRowContext(ctx, statement, id).Scan(&createdAt, &updatedAt); err != nil {
 		return fmt.Errorf("activeso: load timestamps for %s; the timestamps hint expects columns %s and %s: %w", model.tableName, createdAtColumn, updatedAtColumn, err)
 	}
 

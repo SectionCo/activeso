@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	_ "turso.tech/database/tursogo"
 )
@@ -1019,4 +1020,482 @@ func openTestDatabase(t *testing.T) *sql.DB {
 	})
 
 	return db
+}
+
+// TestSaveTxCommitsAndRollsBack verifies SaveTx and DeleteTx join a caller's transaction without rebinding the record.
+func TestSaveTxCommitsAndRollsBack(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+
+	execStatements(t, db, usersSchema)
+
+	created, err := userModel.Create(ctx, User{Email: "before@null.live", Embedding: Vector32{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	// A rolled-back SaveTx and DeleteTx leave the row untouched.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	created.Email = "rolled-back@null.live"
+	if err := created.SaveTx(ctx, tx); err != nil {
+		t.Fatalf("SaveTx() error = %v", err)
+	}
+	if err := created.DeleteTx(ctx, tx); err != nil {
+		t.Fatalf("DeleteTx() error = %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	found, err := userModel.Find(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Find() after rollback error = %v", err)
+	}
+	if found.Email != "before@null.live" {
+		t.Fatalf("Find() after rollback email = %q, want before@null.live", found.Email)
+	}
+
+	// A committed SaveTx persists, and the record still saves through the model's own executor afterwards.
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	created.Email = "committed@null.live"
+	if err := created.SaveTx(ctx, tx); err != nil {
+		t.Fatalf("SaveTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	created.Email = "plain-save@null.live"
+	if err := created.Save(ctx); err != nil {
+		t.Fatalf("Save() after SaveTx() error = %v", err)
+	}
+	found, err = userModel.Find(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if found.Email != "plain-save@null.live" {
+		t.Fatalf("Find() email = %q, want plain-save@null.live", found.Email)
+	}
+
+	// A committed DeleteTx removes the row.
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if err := found.DeleteTx(ctx, tx); err != nil {
+		t.Fatalf("DeleteTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	if _, err := userModel.Find(ctx, found.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Find() after committed DeleteTx() error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestSaveTxRequiresBinding verifies unbound records and ended transactions fail clearly.
+func TestSaveTxRequiresBinding(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	unbound := User{ID: "unbound", Email: "unbound@null.live"}
+
+	execStatements(t, db, usersSchema)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if err := unbound.SaveTx(ctx, tx); !errors.Is(err, ErrUnboundRecord) {
+		t.Fatalf("SaveTx() unbound error = %v, want ErrUnboundRecord", err)
+	}
+	if err := unbound.DeleteTx(ctx, tx); !errors.Is(err, ErrUnboundRecord) {
+		t.Fatalf("DeleteTx() unbound error = %v, want ErrUnboundRecord", err)
+	}
+	created, err := userModel.Create(ctx, User{Email: "ended@null.live", Embedding: Vector32{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	// Using a finished transaction reports database/sql's ErrTxDone.
+	if err := created.SaveTx(ctx, tx); !errors.Is(err, sql.ErrTxDone) {
+		t.Fatalf("SaveTx() after Commit() error = %v, want sql.ErrTxDone", err)
+	}
+}
+
+// TestUsingViewSpansModelsAtomically verifies a Using view makes creates across models commit or roll back together.
+func TestUsingViewSpansModelsAtomically(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	regionModel := Model[Region](db)
+
+	execStatements(t, db, usersSchema+";CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT)")
+
+	// Writes through both views are invisible after a rollback.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	txUsers, txRegions := userModel.Using(tx), regionModel.Using(tx)
+	user, err := txUsers.Create(ctx, User{Email: "tx@null.live", Embedding: Vector32{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("Using().Create() error = %v", err)
+	}
+	if _, err := txRegions.Create(ctx, Region{Name: "North"}); err != nil {
+		t.Fatalf("Using().Create() region error = %v", err)
+	}
+	inside, err := txUsers.Find(ctx, user.ID)
+	if err != nil || inside.Email != "tx@null.live" {
+		t.Fatalf("Using().Find() = %#v, %v; want the uncommitted user", inside, err)
+	}
+
+	// A record created through the view saves on the transaction with a plain Save.
+	user.Email = "tx-saved@null.live"
+	if err := user.Save(ctx); err != nil {
+		t.Fatalf("Save() on a Using record error = %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if users, err := userModel.All(ctx); err != nil || len(users) != 0 {
+		t.Fatalf("All() users after rollback = %d, %v; want none", len(users), err)
+	}
+	if regions, err := regionModel.All(ctx); err != nil || len(regions) != 0 {
+		t.Fatalf("All() regions after rollback = %d, %v; want none", len(regions), err)
+	}
+
+	// Bind moves an existing record into a new transaction.
+	existing, err := userModel.Create(ctx, User{Email: "existing@null.live", Embedding: Vector32{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if _, err := userModel.Using(tx).Bind(existing); err != nil {
+		t.Fatalf("Using().Bind() error = %v", err)
+	}
+	existing.Email = "bound-to-tx@null.live"
+	if err := existing.Save(ctx); err != nil {
+		t.Fatalf("Save() after Bind() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	found, err := userModel.Find(ctx, existing.ID)
+	if err != nil || found.Email != "bound-to-tx@null.live" {
+		t.Fatalf("Find() after commit = %#v, %v; want bound-to-tx@null.live", found, err)
+	}
+}
+
+// TestUsingViewMapsUniqueViolations verifies unique errors keep their public type inside a transaction.
+func TestUsingViewMapsUniqueViolations(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+
+	execStatements(t, db, usersSchema)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	defer tx.Rollback()
+	txUsers := userModel.Using(tx)
+	if _, err := txUsers.Create(ctx, User{Email: "dup@null.live"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	_, err = txUsers.Create(ctx, User{Email: "dup@null.live"})
+	if !errors.Is(err, ErrUnique) {
+		t.Fatalf("Create() duplicate error = %v, want ErrUnique", err)
+	}
+}
+
+// TestScopedViewDoesNotCacheReadiness verifies DDL rolled back inside a transaction never marks the model ready.
+func TestScopedViewDoesNotCacheReadiness(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	regionModel := Model[Region](db)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, "CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT)"); err != nil {
+		t.Fatalf("CREATE TABLE error = %v", err)
+	}
+	if _, err := regionModel.Using(tx).All(ctx); err != nil {
+		t.Fatalf("Using().All() error = %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+
+	// The root model must still see the missing table.
+	if _, err := regionModel.All(ctx); !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("All() after rolled-back DDL error = %v, want ErrSchemaMismatch", err)
+	}
+}
+
+// TestModelRejectsNilExecutors verifies nil and typed-nil executors fail at setup.
+func TestModelRejectsNilExecutors(t *testing.T) {
+	// Initialize Variables
+	var nilDB *sql.DB
+	db := openTestDatabase(t)
+
+	assertModelPanics(t, func() { Model[User](nil) })
+	assertModelPanics(t, func() { Model[User](nilDB) })
+	assertModelPanics(t, func() { Model[User](db).Using(nilDB) })
+}
+
+// TestCreateTxAndFindTxJoinTransactions verifies the per-call variants commit, roll back, and rebind to the original model.
+func TestCreateTxAndFindTxJoinTransactions(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	vector := Vector32{1, 2, 3}
+
+	execStatements(t, db, usersSchema)
+
+	// A rolled-back CreateTx leaves no row, and FindTx sees the uncommitted one inside.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	created, err := userModel.CreateTx(ctx, tx, User{Email: "tx@null.live", Embedding: vector})
+	if err != nil {
+		t.Fatalf("CreateTx() error = %v", err)
+	}
+	inside, err := userModel.FindTx(ctx, tx, created.ID)
+	if err != nil || inside.Email != "tx@null.live" {
+		t.Fatalf("FindTx() = %#v, %v; want the uncommitted user", inside, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if _, err := userModel.Find(ctx, created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Find() after rollback error = %v, want ErrNotFound", err)
+	}
+
+	// A committed CreateTx persists, and the record then saves on the model's own executor without the finished transaction.
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	created, err = userModel.CreateTx(ctx, tx, User{Email: "kept@null.live", Embedding: vector})
+	if err != nil {
+		t.Fatalf("CreateTx() error = %v", err)
+	}
+	found, err := userModel.FindTx(ctx, tx, created.ID)
+	if err != nil {
+		t.Fatalf("FindTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+	created.Email = "saved-after-commit@null.live"
+	if err := created.Save(ctx); err != nil {
+		t.Fatalf("Save() after CreateTx() error = %v", err)
+	}
+	found.Email = "found-saved@null.live"
+	if err := found.Save(ctx); err != nil {
+		t.Fatalf("Save() after FindTx() error = %v", err)
+	}
+}
+
+// TestTxMethodsRejectNilExecutors verifies per-call methods return an error instead of panicking.
+func TestTxMethodsRejectNilExecutors(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	var nilTx *sql.Tx
+
+	execStatements(t, db, usersSchema)
+
+	created, err := userModel.Create(ctx, User{Email: "nil@null.live", Embedding: Vector32{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := userModel.CreateTx(ctx, nilTx, User{Email: "x@null.live"}); err == nil {
+		t.Fatal("CreateTx() with a nil transaction returned no error")
+	}
+	if _, err := userModel.FindTx(ctx, nil, created.ID); err == nil {
+		t.Fatal("FindTx() with a nil transaction returned no error")
+	}
+	if err := created.SaveTx(ctx, nilTx); err == nil {
+		t.Fatal("SaveTx() with a nil transaction returned no error")
+	}
+	if err := created.DeleteTx(ctx, nil); err == nil {
+		t.Fatal("DeleteTx() with a nil transaction returned no error")
+	}
+}
+
+// TestScopedViewDoesNotWaitBehindRootInspection verifies a transaction can finish while a root-model call waits for its connection.
+func TestScopedViewDoesNotWaitBehindRootInspection(t *testing.T) {
+	// Initialize Variables
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	rootDone := make(chan error, 1)
+	txDone := make(chan error, 1)
+
+	defer cancel()
+	db.SetMaxOpenConns(1)
+	execStatements(t, db, usersSchema)
+
+	// The transaction holds the pool's only connection.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	// A root-model call starts its first inspection and waits for a connection.
+	go func() {
+		_, err := userModel.All(ctx)
+		rootDone <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+
+	// The transaction's own work must still complete, or it can never release the connection.
+	go func() {
+		if _, err := userModel.Using(tx).Create(ctx, User{Email: "tx@null.live", Embedding: Vector32{1, 2, 3}}); err != nil {
+			txDone <- err
+			return
+		}
+		txDone <- tx.Commit()
+	}()
+	select {
+	case err := <-txDone:
+		if err != nil {
+			t.Fatalf("transaction error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("transaction blocked behind a root-model call waiting for its connection")
+	}
+
+	// The waiting root call proceeds once the connection is released.
+	if err := <-rootDone; err != nil {
+		t.Fatalf("root All() error = %v", err)
+	}
+}
+
+// TestVerifyWarmsReadinessOnlyForRootPasses verifies a clean root Verify skips later inspections and nothing else does.
+func TestVerifyWarmsReadinessOnlyForRootPasses(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+
+	execStatements(t, db, usersSchema)
+
+	// A clean Verify through a transaction view must not warm the model.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if err := userModel.Using(tx).Verify(ctx); err != nil {
+		t.Fatalf("Using().Verify() error = %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if userModel.readiness.ready.Load() {
+		t.Fatal("Using().Verify() marked the model ready")
+	}
+
+	// Hint drift fails Verify, so it must not warm the model either.
+	driftModel := Model[Membership](db)
+	execStatements(t, db, `CREATE TABLE memberships (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL)`)
+	if err := driftModel.Verify(ctx); err == nil {
+		t.Fatal("Verify() with drift returned no error")
+	}
+	if driftModel.readiness.ready.Load() {
+		t.Fatal("a failed Verify() marked the model ready")
+	}
+
+	// A clean root Verify warms the model.
+	if err := userModel.Verify(ctx); err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !userModel.readiness.ready.Load() {
+		t.Fatal("Verify() did not mark the model ready")
+	}
+}
+
+// TestUsingAnotherPoolInspectsItsOwnSchema verifies a different *sql.DB is not trusted because the root passed.
+func TestUsingAnotherPoolInspectsItsOwnSchema(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	primary := openTestDatabase(t)
+	other := openTestDatabase(t)
+	userModel := Model[User](primary)
+
+	// The primary database has the table and warms the model; the other does not have it.
+	execStatements(t, primary, usersSchema)
+	if _, err := userModel.All(ctx); err != nil {
+		t.Fatalf("All() error = %v", err)
+	}
+	if !userModel.readiness.ready.Load() {
+		t.Fatal("All() did not mark the model ready")
+	}
+	if _, err := userModel.Using(other).All(ctx); !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("Using(other).All() error = %v, want ErrSchemaMismatch", err)
+	}
+
+	// The other pool is cached on its own once it matches, without touching the original.
+	execStatements(t, other, usersSchema)
+	otherView := userModel.Using(other)
+	if _, err := otherView.All(ctx); err != nil {
+		t.Fatalf("Using(other).All() after creating the table error = %v", err)
+	}
+	if !otherView.readiness.ready.Load() {
+		t.Fatal("Using(other).All() did not mark the other pool ready")
+	}
+	if otherView.readiness == userModel.readiness {
+		t.Fatal("Using(other) shares readiness with the original pool")
+	}
+
+	// The model's own pool keeps sharing its readiness.
+	if userModel.Using(primary).readiness != userModel.readiness {
+		t.Fatal("Using(primary) does not share the original readiness")
+	}
+}
+
+// TestModelBuiltOnTransactionNeverCachesReadiness verifies only a *sql.DB executor records a passing check.
+func TestModelBuiltOnTransactionNeverCachesReadiness(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	execStatements(t, db, `CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT)`)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	defer tx.Rollback()
+
+	txModel := Model[Region](tx)
+	if _, err := txModel.All(ctx); err != nil {
+		t.Fatalf("All() error = %v", err)
+	}
+	if txModel.readiness.ready.Load() {
+		t.Fatal("a model built on a transaction recorded a passing check")
+	}
 }

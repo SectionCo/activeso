@@ -6,6 +6,7 @@ ActiveSo is a small active record-like persistence layer for Go structs backed b
 
 - [Quick start](#quick-start)
 - [Bring your own schema](#bring-your-own-schema)
+- [Transactions](#transactions)
 - [Hints](#hints)
 - [Verifying your schema](#verifying-your-schema)
 - [API](#api)
@@ -154,6 +155,61 @@ type User struct {
 
 `sql.NullString{Valid: false}` represents SQL `NULL`; `sql.NullString{String: "", Valid: true}` represents an empty string.
 
+## Transactions
+
+ActiveSo accepts any `activeso.Executor`: `*sql.DB`, `*sql.Tx`, or `*sql.Conn`. You begin, commit, and roll back the transaction yourself; ActiveSo only runs statements on the executor you give it.
+
+Every write and the single-record read has a transaction twin. Call the normal method to run on the model's own database, or the `Tx` method to run on a transaction you pass in:
+
+| Normal | In a transaction |
+| --- | --- |
+| `Create(ctx, value)` | `CreateTx(ctx, tx, value)` |
+| `Find(ctx, id)` | `FindTx(ctx, tx, id)` |
+| `record.Save(ctx)` | `record.SaveTx(ctx, tx)` |
+| `record.Delete(ctx)` | `record.DeleteTx(ctx, tx)` |
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+	return err
+}
+defer tx.Rollback()
+
+user, err := userModel.CreateTx(ctx, tx, User{Email: "hello@null.live"})
+if err != nil {
+	return err
+}
+user.Email = "updated@null.live"
+if err := user.SaveTx(ctx, tx); err != nil {
+	return err
+}
+
+return tx.Commit()
+```
+
+A `*sql.Tx` or `*sql.Conn` you pass must belong to the same database as the model; ActiveSo cannot check this. To use a model with a different database, pass that `*sql.DB` to `Using`, which inspects and caches its schema separately.
+
+Records returned by the `Tx` methods stay bound to the original model, so a later plain `Save` or `Delete` runs on the model's own database, not on the finished transaction.
+
+### More complex transactions
+
+For queries (`Where`, `Nearest`, `FindBy`, `All`) or several operations on one transaction, use [`Using`](#using) to take a transaction-scoped view of a model. Everything created, loaded, or queried through the view, and every `Save` and `Delete` on those records, stays on the transaction. Anything beyond that, such as savepoints or custom isolation, is plain `database/sql` that you write yourself on the same `*sql.Tx`.
+
+```go
+txUsers := userModel.Using(tx)
+matches, err := txUsers.Where("email LIKE ?", "%@null.live").All(ctx)
+for _, match := range matches {
+	match.Email = "migrated@null.live"
+	if err := match.Save(ctx); err != nil { // runs on tx
+		return err
+	}
+}
+```
+
+Turso's driver begins transactions with snapshot isolation and ignores `sql.TxOptions`.
+
+If you limit the pool with `db.SetMaxOpenConns(1)`, an open transaction holds the only connection, so any call through the root model (`Create`, `Find`, `All`, queries, `Verify`, or a plain `Save` or `Delete`) waits until the transaction ends. Inside a transaction use `Using(tx)` or the `*Tx` methods, and call `SaveTx` rather than `Save` on records returned by `CreateTx` and `FindTx`. This is standard `database/sql` behavior.
+
 ## Hints
 
 Hints describe what your table already enforces and how its records relate. Add comma-separated hints in an `activeso` struct tag:
@@ -216,7 +272,7 @@ if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 Because ActiveSo trusts your tables, it can check that they match your model. There are two levels:
 
 - **Automatic structural check.** The first `Create`, `Find`, query, `Save`, or `Delete` on a model checks that the table and every mapped column exist, that the `timestamps` columns exist when that hint is set, and that the primary-key column is a `PRIMARY KEY` or has a single-column unique index. A failure returns an `*activeso.SchemaError` and is retried on the next call, so a table created later is picked up. A passing check is remembered for the model's lifetime, so create a model once and reuse it.
-- **Full check with `Verify(ctx)`.** It adds everything the automatic check skips: column types against Go types (a field type ActiveSo cannot map to a column is reported unless it implements `driver.Valuer` and `sql.Scanner`), and every `not_null`, `unique`, `unique_with`, `index`, `belongs_to`, and `on_delete=cascade` hint. Call it at startup or in a test. It only reads schema metadata and never changes the database.
+- **Full check with `Verify(ctx)`.** It adds everything the automatic check skips: column types against Go types (a field type ActiveSo cannot map to a column is reported unless it implements `driver.Valuer` and `sql.Scanner`), and every `not_null`, `unique`, `unique_with`, `index`, `belongs_to`, and `on_delete=cascade` hint. Call it at startup or in a test. It only reads schema metadata and never changes the database. A clean result also lets later operations skip their first-use structural check, which matters most for transaction calls (see [Transactions](#transactions)).
 
 ```go
 if err := userModel.Verify(ctx); err != nil {
@@ -239,7 +295,9 @@ if err := userModel.Verify(ctx); err != nil {
 - [Model](#model)
 - [Verify](#verify)
 - [Create](#create)
+- [CreateTx](#createtx)
 - [Find](#find)
+- [FindTx](#findtx)
 - [FindBy](#findby)
 - [All](#all)
 - [Where](#where)
@@ -248,8 +306,11 @@ if err := userModel.Verify(ctx); err != nil {
 - [Nearest](#nearest)
 - [First](#first)
 - [Bind](#bind)
+- [Using](#using)
 - [Save](#save)
+- [SaveTx](#savetx)
 - [Delete](#delete)
+- [DeleteTx](#deletetx)
 
 ### Model
 
@@ -277,12 +338,28 @@ if err := userModel.Verify(ctx); err != nil {
 user, err := userModel.Create(ctx, User{Email: "hello@null.live"})
 ```
 
+### CreateTx
+
+`CreateTx(ctx, tx, value)` behaves like `Create` but inserts on `tx` for that call only. The returned record is bound to the original model.
+
+```go
+user, err := userModel.CreateTx(ctx, tx, User{Email: "hello@null.live"})
+```
+
 ### Find
 
 `Find(ctx, id)` loads the record with `id`. It returns `activeso.ErrNotFound` when no record exists.
 
 ```go
 user, err := userModel.Find(ctx, "8b291a21-e69b-47ed-a3e0-f43e7609b26d")
+```
+
+### FindTx
+
+`FindTx(ctx, tx, id)` behaves like `Find` but reads on `tx` for that call only, so it sees the transaction's uncommitted writes. The returned record is bound to the original model. For other reads inside a transaction, use `Using`.
+
+```go
+user, err := userModel.FindTx(ctx, tx, id)
 ```
 
 ### FindBy
@@ -382,6 +459,18 @@ externalUser := &User{ID: "8b291a21-e69b-47ed-a3e0-f43e7609b26d", Email: "hello@
 user, err := userModel.Bind(externalUser)
 ```
 
+### Using
+
+`Using(executor)` is the way to run more than one operation, or any query, on a transaction. It returns a view of the model that runs every operation on `executor`, such as a `*sql.Tx`. Records created or loaded through the view stay bound to it, so their `Save` and `Delete` use the transaction too, and they fail with `sql.ErrTxDone` once it ends. Create models once and call `Using` per transaction; views share the model's metadata.
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+txUsers := userModel.Using(tx)
+user, err := txUsers.Create(ctx, User{Email: "hello@null.live"})
+```
+
+`Using(tx).Bind(record)` moves an existing record into a transaction.
+
 ### Save
 
 `Save(ctx)` updates all persisted fields except the primary key. It is available on records returned by `Create`, `Find`, query methods, or `Bind`. A record loaded outside ActiveSo must be attached with `Bind` first; an unbound record's `Save` and `Delete` return `activeso.ErrUnboundRecord`.
@@ -393,12 +482,28 @@ user.Email = "updated@null.live"
 err := user.Save(ctx)
 ```
 
+### SaveTx
+
+`SaveTx(ctx, tx)` behaves like `Save` but runs on `tx` for that call only. The record stays bound to its original model, so a later `Save` uses the model's own executor.
+
+```go
+err := user.SaveTx(ctx, tx)
+```
+
 ### Delete
 
 `Delete(ctx)` deletes a bound record by primary key.
 
 ```go
 err := user.Delete(ctx)
+```
+
+### DeleteTx
+
+`DeleteTx(ctx, tx)` behaves like `Delete` but runs on `tx` for that call only.
+
+```go
+err := user.DeleteTx(ctx, tx)
 ```
 
 ## Upgrading from 1.x
