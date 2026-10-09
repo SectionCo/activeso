@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	_ "turso.tech/database/tursogo"
 )
@@ -1343,5 +1344,54 @@ func TestTxMethodsRejectNilExecutors(t *testing.T) {
 	}
 	if err := created.DeleteTx(ctx, nil); err == nil {
 		t.Fatal("DeleteTx() with a nil transaction returned no error")
+	}
+}
+
+// TestScopedViewDoesNotWaitBehindRootInspection verifies a transaction can finish while a root-model call waits for its connection.
+func TestScopedViewDoesNotWaitBehindRootInspection(t *testing.T) {
+	// Initialize Variables
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	rootDone := make(chan error, 1)
+	txDone := make(chan error, 1)
+
+	defer cancel()
+	db.SetMaxOpenConns(1)
+	execStatements(t, db, usersSchema)
+
+	// The transaction holds the pool's only connection.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+
+	// A root-model call starts its first inspection and waits for a connection.
+	go func() {
+		_, err := userModel.All(ctx)
+		rootDone <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+
+	// The transaction's own work must still complete, or it can never release the connection.
+	go func() {
+		if _, err := userModel.Using(tx).Create(ctx, User{Email: "tx@null.live", Embedding: Vector32{1, 2, 3}}); err != nil {
+			txDone <- err
+			return
+		}
+		txDone <- tx.Commit()
+	}()
+	select {
+	case err := <-txDone:
+		if err != nil {
+			t.Fatalf("transaction error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("transaction blocked behind a root-model call waiting for its connection")
+	}
+
+	// The waiting root call proceeds once the connection is released.
+	if err := <-rootDone; err != nil {
+		t.Fatalf("root All() error = %v", err)
 	}
 }

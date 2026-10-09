@@ -53,16 +53,14 @@ func (model *model[T]) Verify(ctx context.Context) error {
 // ensureReady runs the structural part of Verify once per model before its first database operation.
 // A failed check is not cached, so a table created afterwards is picked up on the next call.
 // A passing check made through a Using view is not cached either, because an open transaction can see uncommitted DDL that may roll back.
+// No lock is held while inspecting, so two concurrent first calls may both inspect; the check only reads, so that is harmless.
 func (model *model[T]) ensureReady(ctx context.Context) error {
 	// Initialize Variables
 	var problems []string
 	var err error
 
-	model.readiness.mutex.Lock()
-	defer model.readiness.mutex.Unlock()
-
 	// Skip the inspection once the table has matched the model.
-	if model.readiness.ready {
+	if model.readiness.ready.Load() {
 		return nil
 	}
 	problems, err = model.schemaProblems(ctx, false)
@@ -74,7 +72,7 @@ func (model *model[T]) ensureReady(ctx context.Context) error {
 	}
 	// Only the root executor may record a pass; scoped views re-inspect until it does.
 	if !model.scoped {
-		model.readiness.ready = true
+		model.readiness.ready.Store(true)
 	}
 
 	return nil

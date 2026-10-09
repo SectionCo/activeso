@@ -206,6 +206,8 @@ for _, match := range matches {
 
 Turso's driver begins transactions with snapshot isolation and ignores `sql.TxOptions`.
 
+If you limit the pool with `db.SetMaxOpenConns(1)`, an open transaction holds the only connection, so any call through the root model (`Create`, `Find`, `All`, queries, `Verify`, or a plain `Save` or `Delete`) waits until the transaction ends. Inside a transaction use `Using(tx)` or the `*Tx` methods, and call `SaveTx` rather than `Save` on records returned by `CreateTx` and `FindTx`. This is standard `database/sql` behavior.
+
 ## Hints
 
 Hints describe what your table already enforces and how its records relate. Add comma-separated hints in an `activeso` struct tag:
