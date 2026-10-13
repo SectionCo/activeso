@@ -1046,7 +1046,8 @@ func (model *model[T]) selectColumns() []string {
 	for _, field := range model.fields {
 		column := quoteIdentifier(field.column)
 		if field.isVector {
-			columns = append(columns, "vector_extract("+column+") AS "+column)
+			// vector_extract rejects NULL, so read a NULL vector column as NULL and map it to a nil Vector32.
+			columns = append(columns, "CASE WHEN "+column+" IS NULL THEN NULL ELSE vector_extract("+column+") END AS "+column)
 			continue
 		}
 		if nullableScalar(field.goType) {

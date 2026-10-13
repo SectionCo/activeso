@@ -152,6 +152,8 @@ When loading a plain Go `string`, ActiveSo reads SQL `NULL` as `""`. A plain str
 
 Plain numeric and boolean fields also read `NULL` as their Go zero values (`0`, `0.0`, and `false`), so rows that predate a nullable column remain readable. Use nullable `database/sql` value types when the distinction between `NULL` and a zero value matters.
 
+A `Vector32` field reads a `NULL` column as a nil vector, and saving a nil vector writes `NULL`.
+
 ActiveSo supports `sql.NullString` as `TEXT`, `sql.NullInt64` as `INTEGER`, `sql.NullFloat64` as `REAL`, and `sql.NullBool` as `INTEGER`. ActiveSo retains `Valid` when loading and saving:
 
 ```go
