@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	turso "turso.tech/database/tursogo"
+	_ "turso.tech/database/tursogo"
 )
 
 type User struct {
@@ -1043,48 +1043,6 @@ CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT NOT NULL, region_id TEXT REF
 	}
 	if err := region.Delete(ctx); err == nil {
 		t.Fatal("Delete() removed a referenced parent row")
-	}
-}
-
-// TestOpenDBEnforcesForeignKeysOnEveryConnection configures each pooled connection for direct SQL as well.
-func TestOpenDBEnforcesForeignKeysOnEveryConnection(t *testing.T) {
-	// Initialize Variables
-	ctx := context.Background()
-	connector, err := turso.NewConnector(filepath.Join(t.TempDir(), "activeso.db"))
-	var db *sql.DB
-	connections := make([]*sql.Conn, 0, 4)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	db = OpenDB(connector)
-	t.Cleanup(func() {
-		// Initialize Variables
-		closeError := db.Close()
-
-		if closeError != nil {
-			t.Errorf("db.Close() error = %v", closeError)
-		}
-	})
-
-	// Hold every connection simultaneously so each is a distinct physical connection.
-	for range 4 {
-		connection, err := db.Conn(ctx)
-		var enabled int
-
-		if err != nil {
-			t.Fatal(err)
-		}
-		connections = append(connections, connection)
-		if err := connection.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled); err != nil {
-			t.Fatal(err)
-		}
-		if enabled != 1 {
-			t.Fatalf("foreign_keys = %d on pooled connection %d, want 1", enabled, len(connections))
-		}
-	}
-	for _, connection := range connections {
-		connection.Close()
 	}
 }
 

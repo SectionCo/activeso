@@ -8,11 +8,11 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/labstack/echo/v5"
 	"github.com/sectionco/activeso/v2"
-	turso "turso.tech/database/tursogo"
 )
 
 // usersSchema is the application-owned DDL for the users table.
@@ -94,18 +94,39 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 </body>
 </html>`))
 
-// main creates a local Turso database and starts the Echo example server.
+// publish pushes local writes to Turso Cloud. The write already succeeded locally, so a failed push is logged and left for the next one.
+func publish(ctx context.Context, database *activeso.Sync) {
+	// Initialize Variables
+	err := database.Push(ctx)
+
+	if err != nil {
+		log.Printf("push to Turso Cloud failed: %v", err)
+	}
+}
+
+// main opens a local database synced with Turso Cloud and starts the Echo example server.
 func main() {
 	// Initialize Variables
 	ctx := context.Background()
+	remoteURL := os.Getenv("TURSO_DATABASE_URL")
+	authToken := os.Getenv("TURSO_AUTH_TOKEN")
 
-	// Open the database connection to a local Turso database.
-	connector, err := turso.NewConnector("activeso-example.db")
+	// The example syncs with a Turso Cloud database you own, so its location is required.
+	if remoteURL == "" {
+		log.Fatal("set TURSO_DATABASE_URL (and TURSO_AUTH_TOKEN) to a Turso Cloud database")
+	}
+
+	// Open the local database file and bootstrap it from the remote.
+	database, err := activeso.OpenSync(ctx, activeso.SyncConfig{
+		Path:      "activeso-example.db",
+		RemoteURL: remoteURL,
+		AuthToken: authToken,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	db := activeso.OpenDB(connector)
-	defer db.Close()
+	defer database.Close()
+	db := database.DB()
 
 	// Initialize ActiveSo Model
 	userModel := activeso.Model[User](db)
@@ -176,6 +197,7 @@ func main() {
 		if _, err := userModel.Create(ctx, User{Email: email}); err != nil {
 			return err
 		}
+		publish(ctx, database)
 
 		// Redirect to the home page.
 		return c.Redirect(http.StatusSeeOther, "/")
@@ -203,6 +225,7 @@ func main() {
 		if err := user.Save(ctx); err != nil {
 			return err
 		}
+		publish(ctx, database)
 
 		// Redirect to the home page.
 		return c.Redirect(http.StatusSeeOther, "/")
@@ -223,6 +246,7 @@ func main() {
 		if err := user.Delete(ctx); err != nil {
 			return err
 		}
+		publish(ctx, database)
 
 		return c.Redirect(http.StatusSeeOther, "/")
 	})
