@@ -8,18 +8,30 @@ import (
 
 const enableForeignKeys = "PRAGMA foreign_keys = ON"
 
-// execWrite runs a row write on a pooled connection with foreign-key enforcement turned on, so
-// belongs_to constraints hold for every ActiveSo write however the pool was opened.
+// execWrite runs a row write with foreign-key enforcement turned on wherever ActiveSo owns the connection.
+// A *sql.DB write runs on a pooled connection that gets the pragma first, and a *sql.Conn gets it before the
+// write. A *sql.Tx runs as-is: SQLite ignores the pragma inside a transaction, so enforcement there depends
+// on the connection the transaction began on.
 func (model *model[T]) execWrite(ctx context.Context, statement string, arguments ...any) (sql.Result, error) {
 	// Initialize Variables
-	connection, err := model.db.Conn(ctx)
+	var connection *sql.Conn
 	var result sql.Result
+	var err error
 
-	if err != nil {
-		return nil, err
+	switch executor := model.exec.(type) {
+	case *sql.DB:
+		// Take one connection so the pragma and the write share it.
+		connection, err = executor.Conn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Release the connection before returning so follow-up reads cannot starve a one-connection pool.
+		defer connection.Close()
+	case *sql.Conn:
+		connection = executor
+	default:
+		return model.exec.ExecContext(ctx, statement, arguments...)
 	}
-	// Release the connection before returning so follow-up reads cannot starve a one-connection pool.
-	defer connection.Close()
 
 	// The pragma is per connection, so set it on the exact connection that performs the write.
 	if _, err := connection.ExecContext(ctx, enableForeignKeys); err != nil {
