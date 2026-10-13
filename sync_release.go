@@ -36,7 +36,10 @@ func releaseRemote(remote *turso.TursoSyncDb) (err error) {
 		return errors.New("activeso: cannot release the sync database: unsupported tursogo version")
 	}
 	defer func() {
-		if recovered := recover(); recovered != nil {
+		// Initialize Variables
+		recovered := recover()
+
+		if recovered != nil {
 			err = fmt.Errorf("activeso: release sync database: %v", recovered)
 		}
 	}()

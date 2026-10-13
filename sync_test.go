@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // openLocalSync opens a Sync handle whose remote refuses every request, so tests exercise the local
@@ -19,7 +20,10 @@ func openLocalSync(t *testing.T) *Sync {
 	// Initialize Variables
 	ctx := context.Background()
 	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		http.Error(writer, "remote unavailable", http.StatusServiceUnavailable)
+		// Initialize Variables
+		status := http.StatusServiceUnavailable
+
+		http.Error(writer, "remote unavailable", status)
 	}))
 	handle, err := OpenSync(ctx, SyncConfig{
 		Path:          filepath.Join(t.TempDir(), "activeso.db"),
@@ -232,7 +236,10 @@ func TestSyncCloseReleasesFiles(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
 	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		http.Error(writer, "remote unavailable", http.StatusServiceUnavailable)
+		// Initialize Variables
+		status := http.StatusServiceUnavailable
+
+		http.Error(writer, "remote unavailable", status)
 	}))
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	config := SyncConfig{Path: filepath.Join(dir, "activeso.db"), RemoteURL: remote.URL, SkipBootstrap: true}
@@ -294,6 +301,72 @@ func TestSyncCloseWaitsForBusyConnections(t *testing.T) {
 	}
 	if err := handle.Close(); err != nil {
 		t.Fatalf("Close() after releasing the connection error = %v", err)
+	}
+}
+
+// TestSyncCheckpointCompactsLocalLog runs a checkpoint after local writes and rejects it once the handle is closed.
+func TestSyncCheckpointCompactsLocalLog(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	handle := openLocalSync(t)
+	userModel := Model[User](handle.DB())
+
+	execStatements(t, handle.DB(), usersSchema)
+	if _, err := userModel.Create(ctx, User{Email: "checkpoint@null.live"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Checkpoint(ctx); err != nil {
+		t.Fatalf("Checkpoint() error = %v", err)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Checkpoint(ctx); !errors.Is(err, ErrSyncClosed) {
+		t.Fatalf("Checkpoint() after Close error = %v, want ErrSyncClosed", err)
+	}
+}
+
+// TestSyncCloseWaitsForWholeSync keeps Close from landing between the pull and push halves of Sync.
+func TestSyncCloseWaitsForWholeSync(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	requests := make(chan struct{}, 16)
+	release := make(chan struct{})
+	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// Initialize Variables
+		status := http.StatusServiceUnavailable
+
+		// Announce the request, then hold the first one so the Sync call stays in flight.
+		requests <- struct{}{}
+		<-release
+		http.Error(writer, "remote unavailable", status)
+	}))
+	handle, err := OpenSync(ctx, SyncConfig{Path: filepath.Join(t.TempDir(), "activeso.db"), RemoteURL: remote.URL, SkipBootstrap: true})
+	syncDone := make(chan error, 1)
+	closeDone := make(chan error, 1)
+
+	t.Cleanup(remote.Close)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { syncDone <- handle.Sync(ctx) }()
+	<-requests
+
+	// Close must block while Sync is in flight.
+	go func() { closeDone <- handle.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close() returned %v while Sync() was still running", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Once Sync finishes, Close completes.
+	close(release)
+	if err := <-syncDone; err == nil || errors.Is(err, ErrSyncClosed) {
+		t.Fatalf("Sync() error = %v, want the remote failure and not ErrSyncClosed", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
 

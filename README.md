@@ -242,6 +242,7 @@ A one-off `sync.DB().ExecContext(ctx, "PRAGMA foreign_keys = ON")` only configur
 | `Pull(ctx)` | Fetches remote changes and rebases local changes on top of them. It sends nothing. It reports whether remote changes were applied. |
 | `Push(ctx)` | Sends local changes to the remote. It fetches nothing. |
 | `Sync(ctx)` | `Pull`, then `Push`. |
+| `Checkpoint(ctx)` | Compacts the local write-ahead log. Call it periodically on a long-lived replica with sustained writes. |
 | `Stats(ctx)` | Pending local operations (`CdcOperations`), last pull and push times, and network traffic. |
 | `Close()` | Stops sync calls, closes every pooled connection, and releases the database, WAL, and changes files. Later `Pull`, `Push`, and `Stats` calls return `ErrSyncClosed`. Writes that were never pushed stay in the local file. If connections from `DB()` are still checked out it returns `ErrSyncBusy`; return them and call `Close` again. |
 

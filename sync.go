@@ -101,10 +101,6 @@ func (handle *Sync) DB() *sql.DB {
 // Pull fetches remote changes and rebases local changes on top of them. It sends nothing. It reports
 // whether new remote changes were applied locally.
 func (handle *Sync) Pull(ctx context.Context) (bool, error) {
-	// Initialize Variables
-	var changed bool
-	var err error
-
 	// Hold the read lock so Close cannot release the database mid-operation.
 	handle.mu.RLock()
 	defer handle.mu.RUnlock()
@@ -112,16 +108,46 @@ func (handle *Sync) Pull(ctx context.Context) (bool, error) {
 		return false, ErrSyncClosed
 	}
 
-	changed, err = handle.remote.Pull(ctx)
-	if err != nil {
-		return false, fmt.Errorf("activeso: pull: %w", err)
-	}
-
-	return changed, nil
+	return handle.pull(ctx)
 }
 
 // Push sends local changes to the remote. It fetches nothing.
 func (handle *Sync) Push(ctx context.Context) error {
+	// Hold the read lock so Close cannot release the database mid-operation.
+	handle.mu.RLock()
+	defer handle.mu.RUnlock()
+	if handle.closed {
+		return ErrSyncClosed
+	}
+
+	return handle.push(ctx)
+}
+
+// Sync pulls remote changes and then pushes local ones, so local writes rebase onto the latest
+// remote state before they are published. Close waits for the whole sequence, not just one half.
+func (handle *Sync) Sync(ctx context.Context) error {
+	// Initialize Variables
+	var err error
+
+	// Hold one read lock across both halves so Close cannot land between them.
+	handle.mu.RLock()
+	defer handle.mu.RUnlock()
+	if handle.closed {
+		return ErrSyncClosed
+	}
+
+	// Pull first so local writes rebase onto the latest remote state, then publish them.
+	_, err = handle.pull(ctx)
+	if err != nil {
+		return err
+	}
+
+	return handle.push(ctx)
+}
+
+// Checkpoint compacts the local write-ahead log after many writes so a long-lived replica does not
+// keep growing on disk.
+func (handle *Sync) Checkpoint(ctx context.Context) error {
 	// Initialize Variables
 	var err error
 
@@ -132,27 +158,36 @@ func (handle *Sync) Push(ctx context.Context) error {
 		return ErrSyncClosed
 	}
 
-	err = handle.remote.Push(ctx)
+	err = handle.remote.Checkpoint(ctx)
 	if err != nil {
-		return fmt.Errorf("activeso: push: %w", err)
+		return fmt.Errorf("activeso: checkpoint: %w", err)
 	}
 
 	return nil
 }
 
-// Sync pulls remote changes and then pushes local ones, so local writes rebase onto the latest
-// remote state before they are published.
-func (handle *Sync) Sync(ctx context.Context) error {
+// pull runs a pull without taking the close lock; callers must hold it.
+func (handle *Sync) pull(ctx context.Context) (bool, error) {
 	// Initialize Variables
-	var err error
+	changed, err := handle.remote.Pull(ctx)
 
-	// Pull first so local writes rebase onto the latest remote state, then publish them.
-	_, err = handle.Pull(ctx)
 	if err != nil {
-		return err
+		return false, fmt.Errorf("activeso: pull: %w", err)
 	}
 
-	return handle.Push(ctx)
+	return changed, nil
+}
+
+// push runs a push without taking the close lock; callers must hold it.
+func (handle *Sync) push(ctx context.Context) error {
+	// Initialize Variables
+	err := handle.remote.Push(ctx)
+
+	if err != nil {
+		return fmt.Errorf("activeso: push: %w", err)
+	}
+
+	return nil
 }
 
 // Stats reports pending local operations, last pull and push times, and network traffic.
@@ -178,8 +213,10 @@ func (handle *Sync) Stats(ctx context.Context) (SyncStats, error) {
 
 // Close stops sync calls, closes every pooled connection, and releases the database, WAL, and changes
 // files. Later Pull, Push, and Stats calls return ErrSyncClosed. Writes that were never pushed stay in
-// the local file. If connections from DB() are still checked out, Close returns ErrSyncBusy without
-// releasing the files; return them and call Close again. Calling Close after a full release is a no-op.
+// the local file. Connections obtained from DB() and still checked out keep working until they are
+// returned, so return them first: while any remain, Close returns ErrSyncBusy without releasing the
+// files, and calling Close again after they are returned finishes the release. Calling Close after a
+// full release is a no-op.
 func (handle *Sync) Close() error {
 	// Initialize Variables
 	var err error

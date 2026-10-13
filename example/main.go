@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/sectionco/activeso/v2"
@@ -94,13 +95,32 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 </body>
 </html>`))
 
-// publish pushes local writes to Turso Cloud. The write already succeeded locally, so a failed push is logged and left for the next one.
+// publish syncs with Turso Cloud after a write, pulling remote changes and pushing local ones. The write
+// already succeeded locally, so a failed sync is logged and left for the next one.
 func publish(ctx context.Context, database *activeso.Sync) {
 	// Initialize Variables
-	err := database.Push(ctx)
+	err := database.Sync(ctx)
 
 	if err != nil {
-		log.Printf("push to Turso Cloud failed: %v", err)
+		log.Printf("sync with Turso Cloud failed: %v", err)
+	}
+}
+
+// pullPeriodically keeps the local replica current with changes other clients make, until ctx ends.
+func pullPeriodically(ctx context.Context, database *activeso.Sync, interval time.Duration) {
+	// Initialize Variables
+	ticker := time.NewTicker(interval)
+
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := database.Pull(ctx); err != nil {
+				log.Printf("pull from Turso Cloud failed: %v", err)
+			}
+		}
 	}
 }
 
@@ -127,6 +147,11 @@ func main() {
 	}
 	defer database.Close()
 	db := database.DB()
+
+	// Pull in the background so pages reflect changes made by other clients.
+	pullContext, stopPulling := context.WithCancel(ctx)
+	defer stopPulling()
+	go pullPeriodically(pullContext, database, 15*time.Second)
 
 	// Initialize ActiveSo Model
 	userModel := activeso.Model[User](db)
