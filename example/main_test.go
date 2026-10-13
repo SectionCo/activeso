@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,6 +168,7 @@ func TestRenderPage(t *testing.T) {
 	for _, expected := range []string{
 		`action="/users" method="post"`,
 		`action="/users/find" method="get"`,
+		`name="email" type="email" placeholder="User email address"`,
 		"hello@null.live",
 		"User ID: user-1",
 		`formaction="/users/user-1/delete"`,
@@ -174,6 +176,68 @@ func TestRenderPage(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("rendered page does not contain %q: %s", expected, body)
 		}
+	}
+}
+
+// TestFindUserByEmail verifies the HTTP route finds exact emails and reports missing input or users.
+func TestFindUserByEmail(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db, err := sql.Open("turso", filepath.Join(t.TempDir(), "example.db"))
+	echoServer := echo.New()
+	userModel := activeso.Model[User](db)
+	cases := []struct {
+		name  string
+		email string
+		want  string
+		found bool
+	}{
+		{name: "existing email", email: "found@null.live", want: "Found user", found: true},
+		{name: "trimmed email", email: "  found@null.live  ", want: "Found user", found: true},
+		{name: "unknown email", email: "missing@null.live", want: "No user found for that email address."},
+		{name: "empty email", want: "Enter a user email address to find a user."},
+		{name: "blank email", email: "  ", want: "Enter a user email address to find a user."},
+		{name: "partial email", email: "found", want: "No user found for that email address."},
+	}
+
+	// Seed an isolated database; leave the running example's data untouched.
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range strings.Split(usersSchema, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := userModel.Create(ctx, User{Email: "found@null.live"}); err != nil {
+		t.Fatal(err)
+	}
+	registerFindUserRoute(echoServer, db)
+
+	// Exercise the registered route, including query decoding and rendered result states.
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// Initialize Variables
+			request := httptest.NewRequest(http.MethodGet, "/users/find?email="+url.QueryEscape(testCase.email), nil)
+			response := httptest.NewRecorder()
+			var body string
+
+			echoServer.ServeHTTP(response, request)
+			body = response.Body.String()
+			if response.Code != http.StatusOK || !strings.Contains(body, testCase.want) {
+				t.Fatalf("lookup status = %d, body = %s; want 200 containing %q", response.Code, body, testCase.want)
+			}
+			if strings.Contains(body, "<h2>Found user</h2>") != testCase.found {
+				t.Fatalf("found result = %t, want %t", strings.Contains(body, "<h2>Found user</h2>"), testCase.found)
+			}
+			if testCase.found && !strings.Contains(body, "<p>found@null.live <span") {
+				t.Fatalf("found result does not contain the matching email: %s", body)
+			}
+		})
 	}
 }
 
@@ -185,7 +249,7 @@ func TestRenderPageFindStates(t *testing.T) {
 	response := httptest.NewRecorder()
 	context := echoServer.NewContext(request, response)
 	foundUser := &User{ID: "user-2", Email: "found@null.live"}
-	message := "No user found for that ID."
+	message := "No user found for that email address."
 
 	if err := renderPage(context, nil, foundUser, message); err != nil {
 		t.Fatalf("renderPage() error = %v", err)
