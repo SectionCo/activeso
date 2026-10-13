@@ -16,7 +16,7 @@
 
 Hints (the `activeso` struct tag) describe the schema the application owns and never change it: `primary_key`, `unique`, `unique_with=column[+column...]`, `index`, `not_null`, `belongs_to=table(column)`, and `on_delete=cascade` (requires `belongs_to`). Unknown or malformed hints panic at `Model` setup. `unique` and `unique_with` cannot be combined on one field; `unique_with` cannot be on the primary key, cannot list its own column, and must reference mapped columns. `belongs_to` targets must be simple identifiers. On the embedded `Record` the only hint is `timestamps` (see `../timestamp-replay/SKILL.md`).
 
-Enforcement of foreign keys requires `PRAGMA foreign_keys = ON` on the writing connection; `Verify` only checks that the foreign key exists.
+`PRAGMA foreign_keys` is per connection, so ActiveSo sets it on the exact pooled `*sql.Conn` that runs each `Create`/`Save`/`Delete` (`model.execWrite` in `connection.go`), whatever `*sql.DB` the caller supplied. `activeso.OpenDB(connector)` wraps a `driver.Connector` so every pooled connection enforces foreign keys, covering direct SQL as well. A one-off `db.ExecContext("PRAGMA foreign_keys = ON")` only configures one pooled connection and must not be recommended. `Verify` only checks that the foreign key exists.
 
 ## NULL handling and nullable wrappers
 

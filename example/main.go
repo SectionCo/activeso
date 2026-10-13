@@ -4,7 +4,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"html/template"
 	"log"
@@ -105,7 +104,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	db := sql.OpenDB(connector)
+	db := activeso.OpenDB(connector)
 	defer db.Close()
 
 	// Initialize ActiveSo Model

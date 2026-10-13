@@ -19,7 +19,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/sectionco/activeso/v2"
 	turso "turso.tech/database/tursogo"
@@ -40,7 +39,8 @@ func example(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	db := sql.OpenDB(connector)
+	// OpenDB enables foreign-key enforcement on every pooled connection.
+	db := activeso.OpenDB(connector)
 	defer db.Close()
 
 	// Create the table with your own migrations; ActiveSo never creates or alters tables.
@@ -54,11 +54,6 @@ func example(ctx context.Context) error {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users (email)"); err != nil {
-		return err
-	}
-
-	// If using the belongs_to hint, enable foreign-key enforcement on this connection.
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
 		return err
 	}
 
@@ -202,14 +197,20 @@ type OrganizationCustomer struct {
 CREATE UNIQUE INDEX memberships_customer_organization ON organization_customers (customer_id, organization_id);
 ```
 
-Foreign-key enforcement is a connection setting in SQLite-compatible databases. Enable it after opening the database, and make sure every pooled connection is configured:
+Foreign-key enforcement is a connection setting in SQLite-compatible databases. ActiveSo enforces `belongs_to` foreign keys for every write it performs: `Create`, `Save`, and `Delete` turn on `PRAGMA foreign_keys` for the exact pooled connection that runs the write, so a handle opened with plain `sql.OpenDB` or `sql.Open` cannot persist orphaned rows or delete referenced parents through a model.
+
+Your own direct SQL needs every pooled connection configured. Open the handle with `activeso.OpenDB`, which wraps the connector and runs the pragma as each new physical connection is created:
 
 ```go
-db := sql.OpenDB(connector)
-if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+connector, err := turso.NewConnector("app.db")
+if err != nil {
 	return err
 }
+db := activeso.OpenDB(connector)
+defer db.Close()
 ```
+
+Prefer this over a one-off `db.ExecContext(ctx, "PRAGMA foreign_keys = ON")`, which only configures whichever connection happened to service that call.
 
 ## Verifying your schema
 

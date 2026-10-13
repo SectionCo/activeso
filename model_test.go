@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
-	_ "turso.tech/database/tursogo"
+	turso "turso.tech/database/tursogo"
 )
 
 type User struct {
@@ -981,6 +982,107 @@ func assertModelPanics(t *testing.T, create func()) {
 		}
 	}()
 	create()
+}
+
+// holdPooledConnections opens several physical connections at once so later calls can land on any of them.
+func holdPooledConnections(t *testing.T, ctx context.Context, db *sql.DB, count int) {
+	// Initialize Variables
+	connections := make([]*sql.Conn, 0, count)
+
+	t.Helper()
+	for range count {
+		connection, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		connections = append(connections, connection)
+	}
+	for _, connection := range connections {
+		if err := connection.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestModelWritesEnforceForeignKeysAcrossPool rejects orphaning writes on every pooled connection without any manual pragma.
+func TestModelWritesEnforceForeignKeysAcrossPool(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	regionModel := Model[Region](db)
+	cityModel := Model[City](db)
+
+	execStatements(t, db, `CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT NOT NULL, region_id TEXT REFERENCES regions (id))`)
+	if _, err := regionModel.Create(ctx, Region{ID: "oregon", Name: "Oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	holdPooledConnections(t, ctx, db, 4)
+
+	// Repeat so writes are serviced by different pooled connections.
+	for index := range 8 {
+		id := fmt.Sprintf("city-%d", index)
+		city, err := cityModel.Create(ctx, City{ID: id, Name: id, RegionID: "oregon"})
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cityModel.Create(ctx, City{ID: "orphan-" + id, Name: id, RegionID: "missing"}); err == nil {
+			t.Fatalf("Create() accepted a missing belongs_to target on attempt %d", index)
+		}
+		city.RegionID = "missing"
+		if err := city.Save(ctx); err == nil {
+			t.Fatalf("Save() accepted a missing belongs_to target on attempt %d", index)
+		}
+	}
+
+	// A parent that still has children cannot be deleted through the model.
+	region, err := regionModel.Find(ctx, "oregon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := region.Delete(ctx); err == nil {
+		t.Fatal("Delete() removed a referenced parent row")
+	}
+}
+
+// TestOpenDBEnforcesForeignKeysOnEveryConnection configures each pooled connection for direct SQL as well.
+func TestOpenDBEnforcesForeignKeysOnEveryConnection(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	connector, err := turso.NewConnector(filepath.Join(t.TempDir(), "activeso.db"))
+	var db *sql.DB
+	connections := make([]*sql.Conn, 0, 4)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	db = OpenDB(connector)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("db.Close() error = %v", err)
+		}
+	})
+
+	// Hold every connection simultaneously so each is a distinct physical connection.
+	for range 4 {
+		connection, err := db.Conn(ctx)
+		var enabled int
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		connections = append(connections, connection)
+		if err := connection.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled); err != nil {
+			t.Fatal(err)
+		}
+		if enabled != 1 {
+			t.Fatalf("foreign_keys = %d on pooled connection %d, want 1", enabled, len(connections))
+		}
+	}
+	for _, connection := range connections {
+		connection.Close()
+	}
 }
 
 // execStatements runs semicolon-separated DDL statements against db.
