@@ -21,7 +21,7 @@ The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with 
 - `activeso.OpenSync(ctx, config)` opens a local database synced with Turso Cloud.
 - `activeso.Model[User](db)` binds the Go model to the `users` table.
 - Creating a user with `userModel.Create(ctx, User{...})`.
-- Finding a user with `userModel.Find(ctx, id)` via the find form.
+- Finding a user by email address with `userModel.FindBy(ctx, "email", email)` via the find form (an exact match after trimming surrounding whitespace).
 - Updating a bound record with `user.Save(ctx)`.
 - Deleting a bound record with `user.Delete(ctx)`.
 - Creating several users in one transaction with `userModel.CreateTx(ctx, tx, User{...})`: the example begins and commits the transaction itself, and a duplicate email rolls back the whole batch.
@@ -31,7 +31,7 @@ The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with 
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/` | Renders the create form, find form, and existing users. |
-| `GET` | `/users/find` | Finds a user by ID from the `id` query parameter and renders the page with the result or a message. |
+| `GET` | `/users/find` | Finds a user by email address from the `email` query parameter and renders the page with the result or a message. |
 | `POST` | `/users` | Creates a user from an email address. |
 | `POST` | `/sync` | Pulls remote changes and pushes local ones, then redirects home, or shows the failure on the page. |
 | `POST` | `/users/batch` | Creates one user per line of the `emails` field in a single transaction; if any fails, none are saved. |

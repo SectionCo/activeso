@@ -73,7 +73,7 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 		<button type="submit">Create all</button>
 	</form>
 	<form action="/users/find" method="get">
-		<input name="id" type="text" placeholder="User ID" required>
+		<input name="email" type="email" placeholder="User email address" required>
 		<button type="submit">Find user</button>
 	</form>
 
@@ -225,30 +225,7 @@ func main() {
 		// Render the page with the list of users.
 		return renderPage(c, users, nil, "")
 	})
-	e.GET("/users/find", func(c *echo.Context) error {
-		// Initialize Variables
-		ctx := c.Request().Context()
-		id := strings.TrimSpace(c.QueryParam("id"))
-		users, err := userModel.All(ctx)
-		if err != nil {
-			return err
-		}
-
-		if id == "" {
-			return renderPage(c, users, nil, "Enter a user ID to find a user.")
-		}
-
-		// Find the user by ID.
-		user, err := userModel.Find(ctx, id)
-		if errors.Is(err, activeso.ErrNotFound) {
-			return renderPage(c, users, nil, "No user found for that ID.")
-		}
-		if err != nil {
-			return err
-		}
-
-		return renderPage(c, users, user, "")
-	})
+	registerFindUserRoute(e, db)
 
 	e.POST("/users", func(c *echo.Context) error {
 		// Initialize Variables
@@ -347,6 +324,41 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Println("Open http://localhost:8080")
+}
+
+// registerFindUserRoute registers the email lookup form's handler on the example server.
+func registerFindUserRoute(e *echo.Echo, db *sql.DB) {
+	// Initialize Variables
+	userModel := activeso.Model[User](db)
+
+	// Keep updates and deletes ID-based while the find form queries the unique email column.
+	e.GET("/users/find", func(c *echo.Context) error {
+		// Initialize Variables
+		ctx := c.Request().Context()
+		email := strings.TrimSpace(c.QueryParam("email"))
+		users, err := userModel.All(ctx)
+		var matches []*User
+
+		if err != nil {
+			return err
+		}
+
+		// Prompt for an address rather than querying an empty email.
+		if email == "" {
+			return renderPage(c, users, nil, "Enter a user email address to find a user.")
+		}
+
+		// FindBy returns a slice; the schema's unique email index permits at most one match.
+		matches, err = userModel.FindBy(ctx, "email", email)
+		if err != nil {
+			return err
+		}
+		if len(matches) == 0 {
+			return renderPage(c, users, nil, "No user found for that email address.")
+		}
+
+		return renderPage(c, users, matches[0], "")
+	})
 }
 
 // renderPage applies the user list, found user, and message to the HTML template and returns the result.
