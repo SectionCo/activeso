@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -345,15 +346,35 @@ func TestSyncCloseWaitsForWholeSync(t *testing.T) {
 	syncDone := make(chan error, 1)
 	closeDone := make(chan error, 1)
 
+	var releaseOnce sync.Once
+	unblock := func() {
+		// Initialize Variables
+		releaseRequests := func() { close(release) }
+
+		releaseOnce.Do(releaseRequests)
+	}
+
+	// Registered after remote.Close so a failed assertion unblocks the handler before the server waits on it.
 	t.Cleanup(remote.Close)
+	t.Cleanup(unblock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { syncDone <- handle.Sync(ctx) }()
+	go func() {
+		// Initialize Variables
+		syncErr := handle.Sync(ctx)
+
+		syncDone <- syncErr
+	}()
 	<-requests
 
 	// Close must block while Sync is in flight.
-	go func() { closeDone <- handle.Close() }()
+	go func() {
+		// Initialize Variables
+		closeErr := handle.Close()
+
+		closeDone <- closeErr
+	}()
 	select {
 	case err := <-closeDone:
 		t.Fatalf("Close() returned %v while Sync() was still running", err)
@@ -361,7 +382,7 @@ func TestSyncCloseWaitsForWholeSync(t *testing.T) {
 	}
 
 	// Once Sync finishes, Close completes.
-	close(release)
+	unblock()
 	if err := <-syncDone; err == nil || errors.Is(err, ErrSyncClosed) {
 		t.Fatalf("Sync() error = %v, want the remote failure and not ErrSyncClosed", err)
 	}

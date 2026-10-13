@@ -37,7 +37,8 @@ type SyncConfig struct {
 	BusyTimeoutMs int
 }
 
-// SyncStats reports how much local work is waiting to be pushed, along with sync timing and traffic.
+// SyncStats reports local operations written since the last Pull (CdcOperations), last pull and push
+// times, and network traffic. CdcOperations resets on Pull, not on Push.
 type SyncStats = turso.TursoSyncDbStats
 
 // Sync is a local Turso database synchronized with Turso Cloud. Sync is database-wide, so Pull and
@@ -83,6 +84,8 @@ func OpenSync(ctx context.Context, config SyncConfig) (*Sync, error) {
 	}
 	db, err = remote.Connect(ctx)
 	if err != nil {
+		// Free the native handle so a failed open does not leave the replica files held.
+		_ = releaseRemote(remote)
 		return nil, fmt.Errorf("activeso: connect sync database: %w", err)
 	}
 
@@ -101,6 +104,10 @@ func (handle *Sync) DB() *sql.DB {
 // Pull fetches remote changes and rebases local changes on top of them. It sends nothing. It reports
 // whether new remote changes were applied locally.
 func (handle *Sync) Pull(ctx context.Context) (bool, error) {
+	// Initialize Variables
+	var changed bool
+	var err error
+
 	// Hold the read lock so Close cannot release the database mid-operation.
 	handle.mu.RLock()
 	defer handle.mu.RUnlock()
@@ -108,11 +115,16 @@ func (handle *Sync) Pull(ctx context.Context) (bool, error) {
 		return false, ErrSyncClosed
 	}
 
-	return handle.pull(ctx)
+	changed, err = handle.pull(ctx)
+
+	return changed, err
 }
 
 // Push sends local changes to the remote. It fetches nothing.
 func (handle *Sync) Push(ctx context.Context) error {
+	// Initialize Variables
+	var err error
+
 	// Hold the read lock so Close cannot release the database mid-operation.
 	handle.mu.RLock()
 	defer handle.mu.RUnlock()
@@ -120,7 +132,9 @@ func (handle *Sync) Push(ctx context.Context) error {
 		return ErrSyncClosed
 	}
 
-	return handle.push(ctx)
+	err = handle.push(ctx)
+
+	return err
 }
 
 // Sync pulls remote changes and then pushes local ones, so local writes rebase onto the latest
@@ -190,7 +204,8 @@ func (handle *Sync) push(ctx context.Context) error {
 	return nil
 }
 
-// Stats reports pending local operations, last pull and push times, and network traffic.
+// Stats reports local operations written since the last Pull, last pull and push times, and network
+// traffic.
 func (handle *Sync) Stats(ctx context.Context) (SyncStats, error) {
 	// Initialize Variables
 	var stats SyncStats

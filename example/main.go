@@ -106,8 +106,9 @@ func publish(ctx context.Context, database *activeso.Sync) {
 	}
 }
 
-// pullPeriodically keeps the local replica current with changes other clients make, until ctx ends.
-func pullPeriodically(ctx context.Context, database *activeso.Sync, interval time.Duration) {
+// syncPeriodically keeps the local replica current with changes other clients make and retries any push
+// that failed after a write, until ctx ends.
+func syncPeriodically(ctx context.Context, database *activeso.Sync, interval time.Duration) {
 	// Initialize Variables
 	ticker := time.NewTicker(interval)
 
@@ -117,8 +118,8 @@ func pullPeriodically(ctx context.Context, database *activeso.Sync, interval tim
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := database.Pull(ctx); err != nil {
-				log.Printf("pull from Turso Cloud failed: %v", err)
+			if err := database.Sync(ctx); err != nil {
+				log.Printf("sync with Turso Cloud failed: %v", err)
 			}
 		}
 	}
@@ -148,10 +149,10 @@ func main() {
 	defer database.Close()
 	db := database.DB()
 
-	// Pull in the background so pages reflect changes made by other clients.
-	pullContext, stopPulling := context.WithCancel(ctx)
-	defer stopPulling()
-	go pullPeriodically(pullContext, database, 15*time.Second)
+	// Sync in the background so pages reflect other clients' changes and failed pushes are retried.
+	syncContext, stopSyncing := context.WithCancel(ctx)
+	defer stopSyncing()
+	go syncPeriodically(syncContext, database, 15*time.Second)
 
 	// Initialize ActiveSo Model
 	userModel := activeso.Model[User](db)

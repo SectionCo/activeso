@@ -5,7 +5,7 @@
 ## Config and semantics
 
 - `SyncConfig` is ActiveSo's own struct (field `RemoteURL`, not the SDK's `RemoteUrl`). `Path` and `RemoteURL` are required; `OpenSync` rejects empty values before touching the SDK. `SkipBootstrap` maps to the SDK's `BootstrapIfEmpty=false`.
-- `Pull` fetches remote changes and rebases local ones on top; it sends nothing. `Push` sends local changes; it fetches nothing. `Sync` is `Pull` then `Push`. `Checkpoint` compacts the local WAL (SDK `Checkpoint`); callers should run it periodically on long-lived replicas. `Stats` returns the SDK's `TursoSyncDbStats` (aliased as `SyncStats`); `CdcOperations` counts local writes not yet pulled/pushed.
+- `Pull` fetches remote changes and rebases local ones on top; it sends nothing. `Push` sends local changes; it fetches nothing. `Sync` is `Pull` then `Push`. `Checkpoint` compacts the local WAL (SDK `Checkpoint`); callers should run it periodically on long-lived replicas. `Stats` returns the SDK's `TursoSyncDbStats` (aliased as `SyncStats`); `CdcOperations` counts local operations written since the last `Pull` (per the SDK); it is not a count of unpushed writes and does not reset on `Push`.
 - ActiveSo never pushes on its own. Model writes stay local until the caller pushes.
 - Users own the schema on the cloud database as well; ActiveSo never creates or alters tables. Use `Verify` to catch drift, including after a `Pull`.
 
@@ -25,7 +25,7 @@ Tests in `sync_test.go` use `SkipBootstrap` and an `httptest` server that answer
 
 - Opening with `SkipBootstrap` makes no network request; models create, find, save, and delete normally on the synced handle.
 - `Pull`, `Push`, and `Sync` against the failing remote return errors and leave the local rows intact.
-- `Stats().CdcOperations` increases after a model `Create`.
+- `Stats().CdcOperations` increases after a model `Create`. Its reset-on-`Pull` meaning comes from the SDK documentation, not from a test.
 - Orphaning `Create`/`Save` are rejected across a held pool of four connections on the synced handle.
 - `Close` frees every database file (`TestSyncCloseReleasesFiles`, via `/proc/self/fd` or `lsof`) and returns `ErrSyncBusy` while a connection is checked out (`TestSyncCloseWaitsForBusyConnections`).
 

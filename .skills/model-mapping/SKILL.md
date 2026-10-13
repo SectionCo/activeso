@@ -21,7 +21,7 @@ Hints (the `activeso` struct tag) describe the schema the application owns and n
 ## NULL handling and nullable wrappers
 
 - Reads map `NULL` to zero values for plain strings, numbers, and booleans, so rows written before a column was filled stay readable. Use `database/sql` nullable types when `NULL` must stay distinguishable: `sql.NullString`, `sql.NullInt64`, `sql.NullFloat64`, and `sql.NullBool` map to TEXT, INTEGER, REAL, and INTEGER columns respectively (`sqlColumnType`, used by `Verify`).
-- Reading a `Vector32` column that is NULL fails with `Conversion error: Expected blob value` through the `vector_extract` projection. Tests supply a real vector where a vector column is read.
+- A NULL `Vector32` column reads as a nil `Vector32`. Turso's `vector_extract(NULL)` fails with `Conversion error: Expected blob value`, so reads select `CASE WHEN col IS NULL THEN NULL ELSE vector_extract(col) END` (`TestModelReadsNullVector`).
 
 ## Indexes
 

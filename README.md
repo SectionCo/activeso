@@ -79,12 +79,12 @@ func example(ctx context.Context) error {
 		return err
 	}
 
-	// Stats shows how much is waiting to be pushed.
+	// Stats reports sync activity, including local writes since the last Pull.
 	stats, err := sync.Stats(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Println(stats.CdcOperations, "local writes not yet pushed")
+	fmt.Println(stats.CdcOperations, "local writes since the last pull")
 
 	// Records bound by Create keep working until the handle is closed.
 	user.Email = "updated@null.live"
@@ -313,7 +313,7 @@ tx, err := conn.BeginTx(ctx, nil)
 | `Push(ctx)` | Sends local changes to the remote. It fetches nothing. |
 | `Sync(ctx)` | `Pull`, then `Push`. |
 | `Checkpoint(ctx)` | Compacts the local write-ahead log. Call it periodically on a long-lived replica with sustained writes. |
-| `Stats(ctx)` | Pending local operations (`CdcOperations`), last pull and push times, and network traffic. |
+| `Stats(ctx)` | Local operations written since the last `Pull` (`CdcOperations`; it resets on `Pull`, not `Push`), last pull and push times, and network traffic. |
 | `Close()` | Stops sync calls, closes every pooled connection, and releases the database, WAL, and changes files. Later `Pull`, `Push`, and `Stats` calls return `ErrSyncClosed`. Writes that were never pushed stay in the local file. If connections from `DB()` are still checked out it returns `ErrSyncBusy`; return them and call `Close` again. |
 
 `SyncConfig` takes `Path`, `RemoteURL`, and `AuthToken`, plus optional `Namespace`, `ClientName`, `BusyTimeoutMs`, and `SkipBootstrap` (leave an empty local file empty on open and call `Pull` yourself). `Path` and `RemoteURL` are required.

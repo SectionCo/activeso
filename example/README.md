@@ -14,7 +14,7 @@ TURSO_DATABASE_URL=libsql://my-db-org.turso.io TURSO_AUTH_TOKEN=... go -C exampl
 
 Open [http://localhost:8080](http://localhost:8080).
 
-The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with the Turso Cloud database you name, syncs after each create, update, or delete, and pulls every 15 seconds so the page reflects changes from other clients. Delete the local file to re-bootstrap it from the remote.
+The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with the Turso Cloud database you name, syncs after each create, update, or delete, and syncs every 15 seconds so the page reflects changes from other clients and any failed push is retried. Delete the local file to re-bootstrap it from the remote.
 
 ## What it demonstrates
 
