@@ -1059,8 +1059,11 @@ func TestOpenDBEnforcesForeignKeysOnEveryConnection(t *testing.T) {
 	}
 	db = OpenDB(connector)
 	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Errorf("db.Close() error = %v", err)
+		// Initialize Variables
+		closeError := db.Close()
+
+		if closeError != nil {
+			t.Errorf("db.Close() error = %v", closeError)
 		}
 	})
 
