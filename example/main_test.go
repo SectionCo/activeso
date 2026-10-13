@@ -75,6 +75,78 @@ func TestExampleDatabaseLifecycle(t *testing.T) {
 	}
 }
 
+// TestCreateUsersIsAtomic verifies a batch is saved together, and that one duplicate undoes the whole batch.
+func TestCreateUsersIsAtomic(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db, err := sql.Open("turso", filepath.Join(t.TempDir(), "example.db"))
+	userModel := activeso.Model[User](db)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range strings.Split(usersSchema, ";") {
+		if strings.TrimSpace(statement) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A clean batch commits every user.
+	if err := createUsers(ctx, db, userModel, []string{"a@null.live", "b@null.live"}); err != nil {
+		t.Fatalf("createUsers() error = %v", err)
+	}
+	users, err := userModel.All(ctx)
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users after commit = %d; error = %v", len(users), err)
+	}
+
+	// A duplicate fails the batch with ErrUnique and rolls back the new email created before it.
+	err = createUsers(ctx, db, userModel, []string{"c@null.live", "a@null.live"})
+	if !errors.Is(err, activeso.ErrUnique) {
+		t.Fatalf("createUsers() with a duplicate error = %v, want ErrUnique", err)
+	}
+	users, err = userModel.All(ctx)
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users after rollback = %d; error = %v, want the original 2", len(users), err)
+	}
+}
+
+// TestSyncWithCloudReportsFailure verifies a failed sync is returned to the caller, and that the message tells the user to retry.
+func TestSyncWithCloudReportsFailure(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// Initialize Variables
+		status := http.StatusServiceUnavailable
+
+		http.Error(writer, "remote unavailable", status)
+	}))
+	database, err := activeso.OpenSync(ctx, activeso.SyncConfig{
+		Path:          filepath.Join(t.TempDir(), "example.db"),
+		RemoteURL:     remote.URL,
+		SkipBootstrap: true,
+	})
+
+	defer remote.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	// The unreachable remote makes the sync fail, and the error reaches the caller.
+	err = syncWithCloud(ctx, database)
+	if err == nil {
+		t.Fatal("syncWithCloud() succeeded against an unavailable remote")
+	}
+	if message := syncFailureMessage(err); !strings.Contains(message, "saved locally") || !strings.Contains(message, "Sync now") {
+		t.Fatalf("syncFailureMessage() = %q, want it to say changes are saved locally and how to retry", message)
+	}
+}
+
 // TestRenderPage verifies the page renders existing users and their management controls.
 func TestRenderPage(t *testing.T) {
 	// Initialize Variables

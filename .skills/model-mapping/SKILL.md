@@ -16,12 +16,12 @@
 
 Hints (the `activeso` struct tag) describe the schema the application owns and never change it: `primary_key`, `unique`, `unique_with=column[+column...]`, `index`, `not_null`, `belongs_to=table(column)`, and `on_delete=cascade` (requires `belongs_to`). Unknown or malformed hints panic at `Model` setup. `unique` and `unique_with` cannot be combined on one field; `unique_with` cannot be on the primary key, cannot list its own column, and must reference mapped columns. `belongs_to` targets must be simple identifiers. On the embedded `Record` the only hint is `timestamps` (see `../timestamp-replay/SKILL.md`).
 
-Enforcement of foreign keys requires `PRAGMA foreign_keys = ON` on the writing connection; `Verify` only checks that the foreign key exists.
+`PRAGMA foreign_keys` is per connection, so ActiveSo sets it on the exact pooled `*sql.Conn` that runs each `Create`/`Save`/`Delete` (`model.execWrite` in `connection.go`), whatever `*sql.DB` the caller supplied. Direct SQL is not covered; see `../turso-sync/SKILL.md`. A one-off `db.ExecContext("PRAGMA foreign_keys = ON")` only configures one pooled connection and must not be recommended. `Verify` only checks that the foreign key exists.
 
 ## NULL handling and nullable wrappers
 
 - Reads map `NULL` to zero values for plain strings, numbers, and booleans, so rows written before a column was filled stay readable. Use `database/sql` nullable types when `NULL` must stay distinguishable: `sql.NullString`, `sql.NullInt64`, `sql.NullFloat64`, and `sql.NullBool` map to TEXT, INTEGER, REAL, and INTEGER columns respectively (`sqlColumnType`, used by `Verify`).
-- Reading a `Vector32` column that is NULL fails with `Conversion error: Expected blob value` through the `vector_extract` projection. Tests supply a real vector where a vector column is read.
+- A NULL `Vector32` column reads as a nil `Vector32`. Turso's `vector_extract(NULL)` fails with `Conversion error: Expected blob value`, so reads select `CASE WHEN col IS NULL THEN NULL ELSE vector_extract(col) END` (`TestModelReadsNullVector`).
 
 ## Indexes
 

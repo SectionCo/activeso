@@ -9,11 +9,11 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/labstack/echo/v5"
 	"github.com/sectionco/activeso/v2"
-	turso "turso.tech/database/tursogo"
 )
 
 // usersSchema is the application-owned DDL for the users table.
@@ -52,7 +52,7 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 	<style>
 		body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; }
 		form { display: flex; gap: .5rem; align-items: center; margin: .75rem 0; }
-		input { flex: 1; padding: .5rem; }
+		input, textarea { flex: 1; padding: .5rem; font: inherit; }
 		button { padding: .5rem .75rem; cursor: pointer; }
 		.delete { background: #b42318; color: white; border: 0; }
 		.message { color: #b42318; }
@@ -64,6 +64,13 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 	<form action="/users" method="post">
 		<input name="email" type="email" placeholder="hello@null.live" required>
 		<button type="submit">Create user</button>
+	</form>
+	<form action="/sync" method="post">
+		<button type="submit">Sync now</button>
+	</form>
+	<form action="/users/batch" method="post">
+		<textarea name="emails" rows="3" placeholder="One email per line; all are created together or none are" required></textarea>
+		<button type="submit">Create all</button>
 	</form>
 	<form action="/users/find" method="get">
 		<input name="id" type="text" placeholder="User ID" required>
@@ -95,18 +102,77 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 </body>
 </html>`))
 
-// main creates a local Turso database and starts the Echo example server.
+// userCreator creates a user on a caller-owned transaction; the model returned by activeso.Model satisfies it.
+type userCreator interface {
+	CreateTx(ctx context.Context, tx activeso.Executor, value User) (*User, error)
+}
+
+// createUsers creates every email in one transaction, so either all users are saved or none are.
+// ActiveSo never begins or ends a transaction: this function owns Begin, Commit, and Rollback.
+func createUsers(ctx context.Context, db *sql.DB, users userCreator, emails []string) error {
+	// Initialize Variables
+	tx, err := db.BeginTx(ctx, nil)
+
+	if err != nil {
+		return err
+	}
+
+	// Roll back on any early return; after a successful Commit this is a harmless no-op.
+	defer tx.Rollback()
+
+	// CreateTx runs each insert on the transaction, so a duplicate email undoes the earlier ones too.
+	for _, email := range emails {
+		if _, err := users.CreateTx(ctx, tx, User{Email: email}); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// syncWithCloud pulls remote changes and pushes local ones, and reports a failure to the caller instead of retrying it.
+func syncWithCloud(ctx context.Context, database *activeso.Sync) error {
+	// Initialize Variables
+	err := database.Sync(ctx)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// syncFailureMessage tells the user a sync failed and that their changes are safe locally, so they can decide when to retry.
+func syncFailureMessage(err error) string {
+	// Initialize Variables
+	message := "Syncing with Turso Cloud failed: " + err.Error() + ". Your changes are saved locally; use Sync now to retry."
+
+	return message
+}
+
+// main opens a local database synced with Turso Cloud and starts the Echo example server.
 func main() {
 	// Initialize Variables
 	ctx := context.Background()
+	remoteURL := os.Getenv("TURSO_DATABASE_URL")
+	authToken := os.Getenv("TURSO_AUTH_TOKEN")
 
-	// Open the database connection to a local Turso database.
-	connector, err := turso.NewConnector("activeso-example.db")
+	// The example syncs with a Turso Cloud database you own, so its location is required.
+	if remoteURL == "" {
+		log.Fatal("set TURSO_DATABASE_URL (and TURSO_AUTH_TOKEN) to a Turso Cloud database")
+	}
+
+	// Open the local database file and bootstrap it from the remote.
+	database, err := activeso.OpenSync(ctx, activeso.SyncConfig{
+		Path:      "activeso-example.db",
+		RemoteURL: remoteURL,
+		AuthToken: authToken,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	db := sql.OpenDB(connector)
-	defer db.Close()
+	defer database.Close()
+	db := database.DB()
 
 	// Initialize ActiveSo Model
 	userModel := activeso.Model[User](db)
@@ -124,6 +190,25 @@ func main() {
 	// Verify reports any drift between the table and the User hints without changing the database.
 	if err := userModel.Verify(ctx); err != nil {
 		log.Fatal(err)
+	}
+
+	// finishWrite syncs after a write and redirects home, or shows the failure so the user decides whether to retry.
+	finishWrite := func(c *echo.Context) error {
+		// Initialize Variables
+		ctx := c.Request().Context()
+		syncErr := syncWithCloud(ctx, database)
+
+		if syncErr == nil {
+			return c.Redirect(http.StatusSeeOther, "/")
+		}
+
+		// The write already succeeded locally, so show the page with the sync error rather than an error status.
+		users, listErr := userModel.All(ctx)
+		if listErr != nil {
+			return listErr
+		}
+
+		return renderPage(c, users, nil, syncFailureMessage(syncErr))
 	}
 
 	// Initialize the Echo server.
@@ -177,9 +262,39 @@ func main() {
 		if _, err := userModel.Create(ctx, User{Email: email}); err != nil {
 			return err
 		}
+		return finishWrite(c)
+	})
+	e.POST("/sync", func(c *echo.Context) error {
+		// Sync on demand so the user decides when to retry after a failure.
+		return finishWrite(c)
+	})
+	e.POST("/users/batch", func(c *echo.Context) error {
+		// Initialize Variables
+		ctx := c.Request().Context()
+		emails := []string{}
 
-		// Redirect to the home page.
-		return c.Redirect(http.StatusSeeOther, "/")
+		// Read one email per line, skipping blanks.
+		for _, line := range strings.Split(c.FormValue("emails"), "\n") {
+			if email := strings.TrimSpace(line); email != "" {
+				emails = append(emails, email)
+			}
+		}
+		if len(emails) == 0 {
+			return c.String(http.StatusBadRequest, "at least one email is required")
+		}
+
+		// Create every user in a single transaction.
+		if err := createUsers(ctx, db, userModel, emails); err != nil {
+			if errors.Is(err, activeso.ErrUnique) {
+				users, listErr := userModel.All(ctx)
+				if listErr != nil {
+					return listErr
+				}
+				return renderPage(c, users, nil, "No users were added: one of those emails already exists.")
+			}
+			return err
+		}
+		return finishWrite(c)
 	})
 	e.POST("/users/:id", func(c *echo.Context) error {
 		// Initialize Variables
@@ -204,9 +319,7 @@ func main() {
 		if err := user.Save(ctx); err != nil {
 			return err
 		}
-
-		// Redirect to the home page.
-		return c.Redirect(http.StatusSeeOther, "/")
+		return finishWrite(c)
 	})
 	e.POST("/users/:id/delete", func(c *echo.Context) error {
 		// Initialize Variables
@@ -225,7 +338,8 @@ func main() {
 			return err
 		}
 
-		return c.Redirect(http.StatusSeeOther, "/")
+		// Sync, then redirect home.
+		return finishWrite(c)
 	})
 
 	// Start the Echo server on port 8080.

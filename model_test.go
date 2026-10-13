@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -259,6 +260,68 @@ const usersSchema = `CREATE TABLE users (
 	updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX users_email_unique ON users (email);`
+
+// TestModelReadsNullVector verifies every read path loads a row whose Vector32 column is NULL as a nil vector.
+func TestModelReadsNullVector(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	inputVector := Vector32{0.12, -0.08, 0.63}
+
+	execStatements(t, db, usersSchema)
+	empty, err := userModel.Create(ctx, User{Email: "empty@null.live"})
+	if err != nil {
+		t.Fatalf("Create() without a vector error = %v", err)
+	}
+	full, err := userModel.Create(ctx, User{Email: "full@null.live", Embedding: inputVector})
+	if err != nil {
+		t.Fatalf("Create() with a vector error = %v", err)
+	}
+
+	// Find and FindBy return the NULL row with a nil vector.
+	found, err := userModel.Find(ctx, empty.ID)
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if found.Embedding != nil {
+		t.Fatalf("Find() embedding = %#v, want nil", found.Embedding)
+	}
+	byEmail, err := userModel.FindBy(ctx, "email", "empty@null.live")
+	if err != nil || len(byEmail) != 1 || byEmail[0].Embedding != nil {
+		t.Fatalf("FindBy() = %#v; error = %v", byEmail, err)
+	}
+
+	// All and First read NULL and non-NULL vectors in the same result set.
+	everyone, err := userModel.Where("1 = 1").OrderBy("email ASC").All(ctx)
+	if err != nil {
+		t.Fatalf("All() error = %v", err)
+	}
+	if len(everyone) != 2 || everyone[0].Embedding != nil || !reflect.DeepEqual(everyone[1].Embedding, inputVector) {
+		t.Fatalf("All() = %#v, want a nil vector then %#v", everyone, inputVector)
+	}
+	first, err := userModel.Where("id = ?", empty.ID).First(ctx)
+	if err != nil || first.Embedding != nil {
+		t.Fatalf("First() = %#v; error = %v", first, err)
+	}
+
+	// Saving a nil vector keeps the column NULL and the row readable, and setting one round-trips.
+	found.Email = "renamed@null.live"
+	if err := found.Save(ctx); err != nil {
+		t.Fatalf("Save() with a nil vector error = %v", err)
+	}
+	found.Embedding = inputVector
+	if err := found.Save(ctx); err != nil {
+		t.Fatalf("Save() with a vector error = %v", err)
+	}
+	reloaded, err := userModel.Find(ctx, empty.ID)
+	if err != nil || !reflect.DeepEqual(reloaded.Embedding, inputVector) {
+		t.Fatalf("Find() after Save() = %#v; error = %v", reloaded, err)
+	}
+	if _, err := userModel.Find(ctx, full.ID); err != nil {
+		t.Fatalf("Find() full row error = %v", err)
+	}
+}
 
 // TestModelLifecycle verifies create, query, update, delete, and vector persistence with Turso.
 func TestModelLifecycle(t *testing.T) {
@@ -982,6 +1045,68 @@ func assertModelPanics(t *testing.T, create func()) {
 		}
 	}()
 	create()
+}
+
+// holdPooledConnections opens several physical connections at once so later calls can land on any of them.
+func holdPooledConnections(t *testing.T, ctx context.Context, db *sql.DB, count int) {
+	// Initialize Variables
+	connections := make([]*sql.Conn, 0, count)
+
+	t.Helper()
+	for range count {
+		connection, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		connections = append(connections, connection)
+	}
+	for _, connection := range connections {
+		if err := connection.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestModelWritesEnforceForeignKeysAcrossPool rejects orphaning writes on every pooled connection without any manual pragma.
+func TestModelWritesEnforceForeignKeysAcrossPool(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	regionModel := Model[Region](db)
+	cityModel := Model[City](db)
+
+	execStatements(t, db, `CREATE TABLE regions (id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE cities (id TEXT PRIMARY KEY, name TEXT NOT NULL, region_id TEXT REFERENCES regions (id))`)
+	if _, err := regionModel.Create(ctx, Region{ID: "oregon", Name: "Oregon"}); err != nil {
+		t.Fatal(err)
+	}
+	holdPooledConnections(t, ctx, db, 4)
+
+	// Repeat so writes are serviced by different pooled connections.
+	for index := range 8 {
+		id := fmt.Sprintf("city-%d", index)
+		city, err := cityModel.Create(ctx, City{ID: id, Name: id, RegionID: "oregon"})
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cityModel.Create(ctx, City{ID: "orphan-" + id, Name: id, RegionID: "missing"}); err == nil {
+			t.Fatalf("Create() accepted a missing belongs_to target on attempt %d", index)
+		}
+		city.RegionID = "missing"
+		if err := city.Save(ctx); err == nil {
+			t.Fatalf("Save() accepted a missing belongs_to target on attempt %d", index)
+		}
+	}
+
+	// A parent that still has children cannot be deleted through the model.
+	region, err := regionModel.Find(ctx, "oregon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := region.Delete(ctx); err == nil {
+		t.Fatal("Delete() removed a referenced parent row")
+	}
 }
 
 // execStatements runs semicolon-separated DDL statements against db.

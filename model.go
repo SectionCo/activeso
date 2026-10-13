@@ -194,7 +194,7 @@ func (model *model[T]) Create(ctx context.Context, value T) (*T, error) {
 	}
 
 	statement = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", quoteIdentifier(model.tableName), strings.Join(columns, ", "), strings.Join(expressions, ", "))
-	if _, err := model.exec.ExecContext(ctx, statement, arguments...); err != nil {
+	if _, err := model.execWrite(ctx, statement, arguments...); err != nil {
 		return nil, fmt.Errorf("activeso: create %s: %w", model.tableName, model.uniqueWriteError(err))
 	}
 	if err := model.refreshTimestamps(ctx, record); err != nil {
@@ -299,7 +299,7 @@ func (model *model[T]) save(ctx context.Context, entity, originalID any) error {
 	}
 
 	statement := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?", quoteIdentifier(model.tableName), strings.Join(assignments, ", "), quoteIdentifier(model.idField.column))
-	result, err := model.exec.ExecContext(ctx, statement, append(arguments, originalID)...)
+	result, err := model.execWrite(ctx, statement, append(arguments, originalID)...)
 	if err != nil {
 		return fmt.Errorf("activeso: save %s: %w", model.tableName, model.uniqueWriteError(err))
 	}
@@ -359,7 +359,7 @@ func (model *model[T]) delete(ctx context.Context, entity, originalID any) error
 	}
 
 	statement := fmt.Sprintf("DELETE FROM %s WHERE %s = ?", quoteIdentifier(model.tableName), quoteIdentifier(model.idField.column))
-	result, err := model.exec.ExecContext(ctx, statement, originalID)
+	result, err := model.execWrite(ctx, statement, originalID)
 	if err != nil {
 		return fmt.Errorf("activeso: delete %s: %w", model.tableName, err)
 	}
@@ -1142,7 +1142,8 @@ func (model *model[T]) selectColumns() []string {
 	for _, field := range model.fields {
 		column := quoteIdentifier(field.column)
 		if field.isVector {
-			columns = append(columns, "vector_extract("+column+") AS "+column)
+			// vector_extract rejects NULL, so read a NULL vector column as NULL and map it to a nil Vector32.
+			columns = append(columns, "CASE WHEN "+column+" IS NULL THEN NULL ELSE vector_extract("+column+") END AS "+column)
 			continue
 		}
 		if nullableScalar(field.goType) {
