@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -190,6 +192,108 @@ func TestSyncCloseReleasesHandle(t *testing.T) {
 	}
 	if err := handle.DB().PingContext(ctx); err == nil {
 		t.Fatal("DB() still usable after Close")
+	}
+}
+
+// openFilesUnder lists this process's open files inside dir, skipping the test when the platform offers no way to list them.
+func openFilesUnder(t *testing.T, dir string) []string {
+	// Initialize Variables
+	var open []string
+	var output []byte
+	var err error
+
+	t.Helper()
+
+	// Linux exposes descriptors under /proc; other systems fall back to lsof.
+	if entries, readError := os.ReadDir("/proc/self/fd"); readError == nil {
+		for _, entry := range entries {
+			target, linkError := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+			if linkError == nil && strings.HasPrefix(target, dir) {
+				open = append(open, target)
+			}
+		}
+		return open
+	}
+	output, err = exec.Command("lsof", "-p", fmt.Sprint(os.Getpid())).Output()
+	if err != nil {
+		t.Skipf("cannot list open files on this platform: %v", err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if index := strings.Index(line, dir); index >= 0 {
+			open = append(open, line[index:])
+		}
+	}
+
+	return open
+}
+
+// TestSyncCloseReleasesFiles frees the database, WAL, and changes files, and leaves local data readable by a later handle.
+func TestSyncCloseReleasesFiles(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Error(writer, "remote unavailable", http.StatusServiceUnavailable)
+	}))
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	config := SyncConfig{Path: filepath.Join(dir, "activeso.db"), RemoteURL: remote.URL, SkipBootstrap: true}
+	var handle *Sync
+
+	t.Cleanup(remote.Close)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err = OpenSync(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execStatements(t, handle.DB(), usersSchema)
+	if _, err := Model[User](handle.DB()).Create(ctx, User{Email: "kept@null.live"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(openFilesUnder(t, dir)) == 0 {
+		t.Fatal("expected the open sync database to hold files open")
+	}
+
+	if err := handle.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if open := openFilesUnder(t, dir); len(open) != 0 {
+		t.Fatalf("files still open after Close(): %v", open)
+	}
+
+	// A new handle on the same path sees the unpushed row.
+	handle, err = OpenSync(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handle.Close()
+	users, err := Model[User](handle.DB()).Where("email = ?", "kept@null.live").All(ctx)
+	if err != nil || len(users) != 1 {
+		t.Fatalf("reopened users = %v; error = %v", users, err)
+	}
+}
+
+// TestSyncCloseWaitsForBusyConnections refuses to free the database while a connection is checked out, then completes once it returns.
+func TestSyncCloseWaitsForBusyConnections(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	handle := openLocalSync(t)
+	connection, err := handle.DB().Conn(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Close(); !errors.Is(err, ErrSyncBusy) {
+		t.Fatalf("Close() with a connection in use error = %v, want ErrSyncBusy", err)
+	}
+	if _, err := handle.Pull(ctx); !errors.Is(err, ErrSyncClosed) {
+		t.Fatalf("Pull() after a busy Close error = %v, want ErrSyncClosed", err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatalf("Close() after releasing the connection error = %v", err)
 	}
 }
 

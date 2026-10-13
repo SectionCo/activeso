@@ -14,6 +14,10 @@ import (
 // ErrSyncClosed is returned by Sync methods after Close has been called.
 var ErrSyncClosed = errors.New("activeso: sync handle is closed")
 
+// ErrSyncBusy is returned by Close while connections from DB() are still checked out. Release them,
+// then call Close again to finish releasing the database files.
+var ErrSyncBusy = errors.New("activeso: sync handle has connections in use")
+
 // SyncConfig describes the local database file and the Turso Cloud database it syncs with.
 type SyncConfig struct {
 	// Path is the local database file that models read and write.
@@ -43,6 +47,8 @@ type Sync struct {
 	db     *sql.DB
 	mu     sync.RWMutex
 	closed bool
+	// released is set once the SDK's native handle and its files have been freed.
+	released bool
 }
 
 // OpenSync opens the local database at config.Path, bootstraps it from the remote when it is empty,
@@ -170,9 +176,10 @@ func (handle *Sync) Stats(ctx context.Context) (SyncStats, error) {
 	return stats, nil
 }
 
-// Close closes the database handle and every pooled connection. Later Pull, Push, and Stats calls
-// return ErrSyncClosed. Local writes that were never pushed stay in the local file. Calling Close
-// again is a no-op.
+// Close stops sync calls, closes every pooled connection, and releases the database, WAL, and changes
+// files. Later Pull, Push, and Stats calls return ErrSyncClosed. Writes that were never pushed stay in
+// the local file. If connections from DB() are still checked out, Close returns ErrSyncBusy without
+// releasing the files; return them and call Close again. Calling Close after a full release is a no-op.
 func (handle *Sync) Close() error {
 	// Initialize Variables
 	var err error
@@ -180,14 +187,28 @@ func (handle *Sync) Close() error {
 	// Take the write lock so Close waits for in-flight sync operations to finish.
 	handle.mu.Lock()
 	defer handle.mu.Unlock()
-	if handle.closed {
+	if handle.released {
 		return nil
 	}
-	handle.closed = true
-	err = handle.db.Close()
-	if err != nil {
-		return fmt.Errorf("activeso: close sync database: %w", err)
+
+	// Close the pool once; later calls only retry the release.
+	if !handle.closed {
+		handle.closed = true
+		err = handle.db.Close()
+		if err != nil {
+			return fmt.Errorf("activeso: close sync database: %w", err)
+		}
 	}
+
+	// Freeing the native handle while a connection still uses it would crash, so wait for them all.
+	if open := handle.db.Stats().OpenConnections; open > 0 {
+		return fmt.Errorf("%w: %d still open", ErrSyncBusy, open)
+	}
+	err = releaseRemote(handle.remote)
+	if err != nil {
+		return err
+	}
+	handle.released = true
 
 	return nil
 }

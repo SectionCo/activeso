@@ -11,7 +11,9 @@
 
 ## Close
 
-The SDK has no public close for `TursoSyncDb` (its native sync handle is never deinitialized by the public API) and its HTTP client is unexported. `Sync.Close` therefore closes the `*sql.DB`, which closes every pooled connection, marks the handle closed, and makes `Pull`/`Push`/`Stats` return `ErrSyncClosed`. A read-write mutex makes `Close` wait for in-flight sync calls. A second `Close` is a no-op. Releasing the SDK handle needs an upstream change.
+`sql.DB.Close` alone does NOT release the files: with tursogo v0.8.2 and v0.8.3, `lsof` still shows the database, `-wal`, and `-changes` files open after it, because `TursoSyncDb` has no public close and never frees its native handle. `Sync.Close` (`sync.go`) closes the pool, then calls `releaseRemote` (`sync_release.go`), which uses an exported `Close() error` on `TursoSyncDb` if a future SDK adds one, and otherwise links the SDK's own `turso_sync_database_deinit` with `//go:linkname` (an empty `sync_release.s` makes the bodyless declaration legal) and passes it the handle read by reflection from `TursoSyncDb.db`. Verified: three open files before, none after, and a new `OpenSync` on the same path still reads the unpushed rows. A renamed symbol fails the build; a changed field layout makes `Close` return an error instead of crashing.
+
+Freeing the handle while a connection still uses it would crash, so `Close` marks the handle closed (`Pull`/`Push`/`Stats` return `ErrSyncClosed`), closes the pool, and returns `ErrSyncBusy` without releasing while `db.Stats().OpenConnections > 0`; calling `Close` again after returning the connections finishes the release. A read-write mutex makes `Close` wait for in-flight sync calls. Prefer an upstream `Close` on `TursoSyncDb` and drop the linkname once it exists; recheck on every SDK upgrade.
 
 ## Foreign keys
 
@@ -25,5 +27,6 @@ Tests in `sync_test.go` use `SkipBootstrap` and an `httptest` server that answer
 - `Pull`, `Push`, and `Sync` against the failing remote return errors and leave the local rows intact.
 - `Stats().CdcOperations` increases after a model `Create`.
 - Orphaning `Create`/`Save` are rejected across a held pool of four connections on the synced handle.
+- `Close` frees every database file (`TestSyncCloseReleasesFiles`, via `/proc/self/fd` or `lsof`) and returns `ErrSyncBusy` while a connection is checked out (`TestSyncCloseWaitsForBusyConnections`).
 
 Not verified: a successful `Pull`/`Push` round trip, rebase-conflict behavior, and whether schema changes replicate. The SDK's own test server is in a `_test.go` file and cannot be imported. `TestSyncAgainstTursoCloud` runs a real round trip when `ACTIVESO_SYNC_URL` (and `ACTIVESO_SYNC_TOKEN`) are set; it is skipped otherwise. Never open a live synced replica with a plain non-sync connection or SQLite.

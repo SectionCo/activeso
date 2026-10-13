@@ -2,6 +2,17 @@
 
 ActiveSo is a small active record-like persistence layer for Go structs backed by Turso. It generates the SQL for creating, reading, updating, and deleting records. **It does not create or migrate your schema:** you own your tables and their migrations, and ActiveSo checks that they match your Go types.
 
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Syncing with Turso Cloud](#syncing-with-turso-cloud)
+- [Bring your own schema](#bring-your-own-schema)
+- [Hints](#hints)
+- [Verifying your schema](#verifying-your-schema)
+- [API](#api)
+- [Upgrading from 1.x](#upgrading-from-1x)
+- [Browser example](#browser-example)
+
 ## Quick start
 
 Every ActiveSo database is a local Turso file that syncs with Turso Cloud. `OpenSync` opens it, and models run on the handle it returns.
@@ -81,17 +92,6 @@ func example(ctx context.Context) error {
 ```
 
 The tables `Verify` checks must already exist; see [Bring your own schema](#bring-your-own-schema) for the `users` table this model maps to.
-
-## Table of contents
-
-- [Quick start](#quick-start)
-- [Syncing with Turso Cloud](#syncing-with-turso-cloud)
-- [Bring your own schema](#bring-your-own-schema)
-- [Hints](#hints)
-- [Verifying your schema](#verifying-your-schema)
-- [API](#api)
-- [Upgrading from 1.x](#upgrading-from-1x)
-- [Browser example](#browser-example)
 
 `Model` uses plural snake_case table names by default. English inflection handles common and irregular forms (`User` → `users`, `City` → `cities`, `Person` → `people`) and does not double-pluralize a type already named `Users`.
 
@@ -243,13 +243,13 @@ A one-off `sync.DB().ExecContext(ctx, "PRAGMA foreign_keys = ON")` only configur
 | `Push(ctx)` | Sends local changes to the remote. It fetches nothing. |
 | `Sync(ctx)` | `Pull`, then `Push`. |
 | `Stats(ctx)` | Pending local operations (`CdcOperations`), last pull and push times, and network traffic. |
-| `Close()` | Closes the database handle and every pooled connection. Later `Pull`, `Push`, and `Stats` calls return `ErrSyncClosed`. Writes that were never pushed stay in the local file. Calling it twice is safe. |
+| `Close()` | Stops sync calls, closes every pooled connection, and releases the database, WAL, and changes files. Later `Pull`, `Push`, and `Stats` calls return `ErrSyncClosed`. Writes that were never pushed stay in the local file. If connections from `DB()` are still checked out it returns `ErrSyncBusy`; return them and call `Close` again. |
 
 `SyncConfig` takes `Path`, `RemoteURL`, and `AuthToken`, plus optional `Namespace`, `ClientName`, `BusyTimeoutMs`, and `SkipBootstrap` (leave an empty local file empty on open and call `Pull` yourself). `Path` and `RemoteURL` are required.
 
 Writes made through models are local until you call `Push` or `Sync`; ActiveSo does not push for you. Keep your schema up to date yourself on every database that syncs, then use `Verify` to catch drift, including after a `Pull`.
 
-Call `Close` before your program exits. The Turso Go SDK does not expose a way to release its internal sync handle, so `Close` releases what the SDK allows: the pooled connections and the `*sql.DB`.
+Call `sync.Close()` when you are done with the database. Closing the `*sql.DB` from `sync.DB()` directly closes the connections but leaves the database files open, because the Turso SDK keeps its own sync handle; only `sync.Close()` releases them.
 
 ## Verifying your schema
 
