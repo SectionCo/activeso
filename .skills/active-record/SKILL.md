@@ -21,7 +21,7 @@ Binding captures a record's primary-key value. Changing a bound record's ID make
 
 ## Turso vectors
 
-`Vector32` fields are persisted with Turso's `vector32(?)` function and read with `vector_extract(...)`. The Go value is a `[]float32`-based type; its transport representation is JSON.
+`Vector32` fields are persisted with Turso's `vector32(?)` function and read with `vector_extract(...)`. The Go value is a `[]float32`-based type; its transport representation is JSON. Turso's `vector_extract(NULL)` fails with "Conversion error: Expected blob value", so reads select `CASE WHEN col IS NULL THEN NULL ELSE vector_extract(col) END`; a NULL column loads as a nil `Vector32`, and a nil `Vector32` writes NULL (`TestModelReadsNullVector`).
 
 `model.Nearest(column, embedding)` orders records by Turso's `vector_distance_cos` in ascending order, so lower distance results are returned first. `Vector32` values supplied to `Where` are JSON-encoded automatically; callers must use them with a `vector32(?)` SQL expression, such as `Where("vector_distance_cos(embedding, vector32(?)) < ?", embedding, 0.2)`. `FindBy(ctx, vectorColumn, embedding)` recognizes mapped `Vector32` columns and adds that conversion automatically for equality predicates.
 

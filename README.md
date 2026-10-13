@@ -5,6 +5,7 @@ ActiveSo is a small active record-like persistence layer for Go structs backed b
 ## Table of contents
 
 - [Quick start](#quick-start)
+- [Syncing with Turso Cloud](#syncing-with-turso-cloud)
 - [Bring your own schema](#bring-your-own-schema)
 - [Hints](#hints)
 - [Verifying your schema](#verifying-your-schema)
@@ -14,14 +15,17 @@ ActiveSo is a small active record-like persistence layer for Go structs backed b
 
 ## Quick start
 
+Every ActiveSo database is a local Turso file that syncs with Turso Cloud. `OpenSync` opens it, and models run on the handle it returns.
+
 ```go
 package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/sectionco/activeso/v2"
-	turso "turso.tech/database/tursogo"
 )
 
 type User struct {
@@ -33,49 +37,61 @@ type User struct {
 }
 
 func example(ctx context.Context) error {
-
-	// Create a Turso connector and open a database/sql handle over it.
-	connector, err := turso.NewConnector("app.db")
+	sync, err := activeso.OpenSync(ctx, activeso.SyncConfig{
+		Path:      "app.db",
+		RemoteURL: "libsql://my-db-org.turso.io",
+		AuthToken: os.Getenv("TURSO_AUTH_TOKEN"),
+	})
 	if err != nil {
 		return err
 	}
-	// OpenDB enables foreign-key enforcement on every pooled connection.
-	db := activeso.OpenDB(connector)
-	defer db.Close()
+	defer sync.Close()
 
-	// Create the table with your own migrations; ActiveSo never creates or alters tables.
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS users (
-		id TEXT PRIMARY KEY,
-		email TEXT NOT NULL,
-		embedding BLOB,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`); err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users (email)"); err != nil {
+	// Models work on the same handle as a plain database.
+	userModel := activeso.Model[User](sync.DB())
+
+	// You own the schema, on the cloud database too. Verify catches drift.
+	if err := userModel.Verify(ctx); err != nil {
 		return err
 	}
 
-	// Initialize the User model once and reuse it.
-	userModel := activeso.Model[User](db)
-
-	// Create a new User record.
+	// Writes are local until you push.
 	user, err := userModel.Create(ctx, User{Email: "hello@null.live"})
 	if err != nil {
 		return err
 	}
 
-	// Update the user's email.
-	user.Email = "updated@null.live"
-	if err := user.Save(ctx); err != nil {
+	// Pull fetches remote changes and rebases local ones on top. It sends nothing.
+	changed, err := sync.Pull(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Println("remote changes applied:", changed)
+
+	// Push sends local changes. It fetches nothing.
+	if err := sync.Push(ctx); err != nil {
 		return err
 	}
 
-	// Delete the user.
-	return user.Delete(ctx)
+	// Sync does Pull, then Push, for the common "catch up and publish" case.
+	if err := sync.Sync(ctx); err != nil {
+		return err
+	}
+
+	// Stats shows how much is waiting to be pushed.
+	stats, err := sync.Stats(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Println(stats.CdcOperations, "local writes not yet pushed")
+
+	// Records bound by Create keep working until the handle is closed.
+	user.Email = "updated@null.live"
+	return user.Save(ctx)
 }
 ```
+
+The tables `Verify` checks must already exist; see [Bring your own schema](#bring-your-own-schema) for the `users` table this model maps to.
 
 `Model` uses plural snake_case table names by default. English inflection handles common and irregular forms (`User` → `users`, `City` → `cities`, `Person` → `people`) and does not double-pluralize a type already named `Users`.
 
@@ -135,6 +151,8 @@ Timestamps are metadata written by ActiveSo, not an authorization boundary. Writ
 When loading a plain Go `string`, ActiveSo reads SQL `NULL` as `""`. A plain string write always stores text, so `NULL` and an empty string become indistinguishable after the value is loaded or saved.
 
 Plain numeric and boolean fields also read `NULL` as their Go zero values (`0`, `0.0`, and `false`), so rows that predate a nullable column remain readable. Use nullable `database/sql` value types when the distinction between `NULL` and a zero value matters.
+
+A `Vector32` field reads a `NULL` column as a nil vector, and saving a nil vector writes `NULL`.
 
 ActiveSo supports `sql.NullString` as `TEXT`, `sql.NullInt64` as `INTEGER`, `sql.NullFloat64` as `REAL`, and `sql.NullBool` as `INTEGER`. ActiveSo retains `Valid` when loading and saving:
 
@@ -197,20 +215,42 @@ type OrganizationCustomer struct {
 CREATE UNIQUE INDEX memberships_customer_organization ON organization_customers (customer_id, organization_id);
 ```
 
-Foreign-key enforcement is a connection setting in SQLite-compatible databases. ActiveSo enforces `belongs_to` foreign keys for every write it performs: `Create`, `Save`, and `Delete` turn on `PRAGMA foreign_keys` for the exact pooled connection that runs the write, so a handle opened with plain `sql.OpenDB` or `sql.Open` cannot persist orphaned rows or delete referenced parents through a model.
+Foreign-key enforcement is a connection setting in SQLite-compatible databases. ActiveSo enforces `belongs_to` foreign keys for every write it performs: `Create`, `Save`, and `Delete` turn on `PRAGMA foreign_keys` for the exact pooled connection that runs the write, so a model cannot persist orphaned rows or delete a referenced parent whichever pooled connection services the call.
 
-Your own direct SQL needs every pooled connection configured. Open the handle with `activeso.OpenDB`, which wraps the connector and runs the pragma as each new physical connection is created:
+Your own direct SQL on `sync.DB()` is not covered, because the pragma applies per connection and the Turso sync driver builds its own pool. Take one connection, enable the pragma on it, and run your statements there:
 
 ```go
-connector, err := turso.NewConnector("app.db")
+conn, err := sync.DB().Conn(ctx)
 if err != nil {
 	return err
 }
-db := activeso.OpenDB(connector)
-defer db.Close()
+defer conn.Close()
+if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+	return err
+}
 ```
 
-Prefer this over a one-off `db.ExecContext(ctx, "PRAGMA foreign_keys = ON")`, which only configures whichever connection happened to service that call.
+A one-off `sync.DB().ExecContext(ctx, "PRAGMA foreign_keys = ON")` only configures whichever pooled connection happened to service that call.
+
+## Syncing with Turso Cloud
+
+`activeso.OpenSync(ctx, config)` is the only way to open a database. It opens the local file at `Path`, downloads the remote state when the file is empty, and returns a `*Sync`. Sync is database-wide, so `Pull`, `Push`, and `Stats` live on that handle and not on models.
+
+| Method | Behavior |
+| --- | --- |
+| `DB()` | The `*sql.DB` to pass to `activeso.Model`. |
+| `Pull(ctx)` | Fetches remote changes and rebases local changes on top of them. It sends nothing. It reports whether remote changes were applied. |
+| `Push(ctx)` | Sends local changes to the remote. It fetches nothing. |
+| `Sync(ctx)` | `Pull`, then `Push`. |
+| `Checkpoint(ctx)` | Compacts the local write-ahead log. Call it periodically on a long-lived replica with sustained writes. |
+| `Stats(ctx)` | Pending local operations (`CdcOperations`), last pull and push times, and network traffic. |
+| `Close()` | Stops sync calls, closes every pooled connection, and releases the database, WAL, and changes files. Later `Pull`, `Push`, and `Stats` calls return `ErrSyncClosed`. Writes that were never pushed stay in the local file. If connections from `DB()` are still checked out it returns `ErrSyncBusy`; return them and call `Close` again. |
+
+`SyncConfig` takes `Path`, `RemoteURL`, and `AuthToken`, plus optional `Namespace`, `ClientName`, `BusyTimeoutMs`, and `SkipBootstrap` (leave an empty local file empty on open and call `Pull` yourself). `Path` and `RemoteURL` are required.
+
+Writes made through models are local until you call `Push` or `Sync`; ActiveSo does not push for you. Keep your schema up to date yourself on every database that syncs, then use `Verify` to catch drift, including after a `Pull`.
+
+Call `sync.Close()` when you are done with the database. Closing the `*sql.DB` from `sync.DB()` directly closes the connections but leaves the database files open, because the Turso SDK keeps its own sync handle; only `sync.Close()` releases them.
 
 ## Verifying your schema
 
@@ -433,18 +473,18 @@ Indexes that 1.x created (named like `activeso_<hex>_<hex>_unique`) keep working
 
 ## Browser example
 
-The `example/` directory contains a small Echo v5 server with a single HTML page for creating, editing, and deleting users. It creates its own schema in a local `activeso-example.db` file and listens on [http://localhost:8080](http://localhost:8080).
+The `example/` directory contains a small Echo v5 server with a single HTML page for creating, editing, and deleting users. It syncs a local `activeso-example.db` file with a Turso Cloud database, so it needs a remote you own, and it listens on [http://localhost:8080](http://localhost:8080).
 
 ```sh
-go -C example run .
+TURSO_DATABASE_URL=libsql://my-db-org.turso.io TURSO_AUTH_TOKEN=... go -C example run .
 ```
 
 ### Inspect the local database
 
-After stopping the browser example so it no longer has the database file open, start a local Turso server in one terminal:
+`activeso-example.db` is a synced replica. Never open it with a plain non-sync connection or a SQLite client; stop the example, copy the file, and inspect the copy. Start a local Turso server on the copy in one terminal:
 
 ```sh
-turso dev --db-file activeso-example.db --port 8100
+turso dev --db-file activeso-example-copy.db --port 8100
 ```
 
 In a second terminal, connect its SQL shell:

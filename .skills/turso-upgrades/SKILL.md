@@ -9,7 +9,7 @@
 
 ## Verified compatibility
 
-The existing example setup using `turso.NewConnector("activeso-example.db")` and `sql.OpenDB(connector)` builds unchanged with v0.8.2. No application API migration was necessary. The root library keeps its Go 1.24.0 directive and the example keeps Go 1.25.0; this dependency upgrade did not require changing either.
+`activeso.OpenSync` (see `../turso-sync/SKILL.md`) builds against v0.8.2 with its sync API (`NewTursoSyncDb`, `Connect`, `Pull`, `Push`, `Stats`); recheck those signatures on every SDK upgrade. No application API migration was necessary. The root library keeps its Go 1.24.0 directive and the example keeps Go 1.25.0; this dependency upgrade did not require changing either.
 
 Root coverage lives in `model_test.go` (lifecycle, timestamps, unique-violation mapping, `Verify`, structural checks). See `../timestamp-replay/SKILL.md` and `../schema-verification/SKILL.md`. In the example module, `TestExampleDatabaseLifecycle` uses a temporary local Turso database to verify the example's own DDL, `Verify`, Create, Find, bound Save/Delete, and timestamp population/preservation. Rendering tests cover the user-management page.
 
