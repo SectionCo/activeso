@@ -55,7 +55,7 @@ func TestOpenSyncRequiresPathAndRemote(t *testing.T) {
 	// Initialize Variables
 	ctx := context.Background()
 
-	if _, err := OpenSync(ctx, SyncConfig{RemoteURL: "libsql://example.turso.io"}); err == nil {
+	if _, err := OpenSync(ctx, SyncConfig{RemoteURL: "turso://example.turso.io"}); err == nil {
 		t.Fatal("OpenSync() accepted a config without Path")
 	}
 	if _, err := OpenSync(ctx, SyncConfig{Path: filepath.Join(t.TempDir(), "activeso.db")}); err == nil {

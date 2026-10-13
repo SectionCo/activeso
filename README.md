@@ -40,7 +40,7 @@ type User struct {
 func example(ctx context.Context) error {
 	sync, err := activeso.OpenSync(ctx, activeso.SyncConfig{
 		Path:      "app.db",
-		RemoteURL: "libsql://my-db-org.turso.io",
+		RemoteURL: "turso://my-db-my-org.aws-us-east-1.turso.io",
 		AuthToken: os.Getenv("TURSO_AUTH_TOKEN"),
 	})
 	if err != nil {
@@ -595,7 +595,7 @@ Indexes that 1.x created (named like `activeso_<hex>_<hex>_unique`) keep working
 The `example/` directory contains a small Echo v5 server with a single HTML page for creating, editing, and deleting users. It syncs a local `activeso-example.db` file with a Turso Cloud database, so it needs a remote you own, and it listens on [http://localhost:8080](http://localhost:8080).
 
 ```sh
-TURSO_DATABASE_URL=libsql://my-db-org.turso.io TURSO_AUTH_TOKEN=... go -C example run .
+TURSO_DATABASE_URL=turso://my-db-my-org.aws-us-east-1.turso.io TURSO_AUTH_TOKEN=... go -C example run .
 ```
 
 ### Inspect the local database
