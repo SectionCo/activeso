@@ -14,7 +14,7 @@ TURSO_DATABASE_URL=libsql://my-db-org.turso.io TURSO_AUTH_TOKEN=... go -C exampl
 
 Open [http://localhost:8080](http://localhost:8080).
 
-The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with the Turso Cloud database you name, syncs after each create, update, or delete, and syncs every 15 seconds so the page reflects changes from other clients and any failed push is retried. Delete the local file to re-bootstrap it from the remote.
+The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with the Turso Cloud database you name, syncs after each create, update, or delete, and shows the user any sync failure straight away. The change stays saved locally, and the user decides when to retry with the "Sync now" button; the example never retries on its own. Delete the local file to re-bootstrap it from the remote.
 
 ## What it demonstrates
 
@@ -33,6 +33,7 @@ The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with 
 | `GET` | `/` | Renders the create form, find form, and existing users. |
 | `GET` | `/users/find` | Finds a user by ID from the `id` query parameter and renders the page with the result or a message. |
 | `POST` | `/users` | Creates a user from an email address. |
+| `POST` | `/sync` | Pulls remote changes and pushes local ones, then redirects home, or shows the failure on the page. |
 | `POST` | `/users/batch` | Creates one user per line of the `emails` field in a single transaction; if any fails, none are saved. |
 | `POST` | `/users/:id` | Updates a user's email address. |
 | `POST` | `/users/:id/delete` | Deletes a user. |

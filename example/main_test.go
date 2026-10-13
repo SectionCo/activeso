@@ -115,6 +115,38 @@ func TestCreateUsersIsAtomic(t *testing.T) {
 	}
 }
 
+// TestSyncWithCloudReportsFailure verifies a failed sync is returned to the caller, and that the message tells the user to retry.
+func TestSyncWithCloudReportsFailure(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// Initialize Variables
+		status := http.StatusServiceUnavailable
+
+		http.Error(writer, "remote unavailable", status)
+	}))
+	database, err := activeso.OpenSync(ctx, activeso.SyncConfig{
+		Path:          filepath.Join(t.TempDir(), "example.db"),
+		RemoteURL:     remote.URL,
+		SkipBootstrap: true,
+	})
+
+	defer remote.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	// The unreachable remote makes the sync fail, and the error reaches the caller.
+	err = syncWithCloud(ctx, database)
+	if err == nil {
+		t.Fatal("syncWithCloud() succeeded against an unavailable remote")
+	}
+	if message := syncFailureMessage(err); !strings.Contains(message, "saved locally") || !strings.Contains(message, "Sync now") {
+		t.Fatalf("syncFailureMessage() = %q, want it to say changes are saved locally and how to retry", message)
+	}
+}
+
 // TestRenderPage verifies the page renders existing users and their management controls.
 func TestRenderPage(t *testing.T) {
 	// Initialize Variables

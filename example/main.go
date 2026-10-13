@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/sectionco/activeso/v2"
@@ -65,6 +64,9 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 	<form action="/users" method="post">
 		<input name="email" type="email" placeholder="hello@null.live" required>
 		<button type="submit">Create user</button>
+	</form>
+	<form action="/sync" method="post">
+		<button type="submit">Sync now</button>
 	</form>
 	<form action="/users/batch" method="post">
 		<textarea name="emails" rows="3" placeholder="One email per line; all are created together or none are" required></textarea>
@@ -128,34 +130,24 @@ func createUsers(ctx context.Context, db *sql.DB, users userCreator, emails []st
 	return tx.Commit()
 }
 
-// publish syncs with Turso Cloud after a write, pulling remote changes and pushing local ones. The write
-// already succeeded locally, so a failed sync is logged and left for the next one.
-func publish(ctx context.Context, database *activeso.Sync) {
+// syncWithCloud pulls remote changes and pushes local ones, and reports a failure to the caller instead of retrying it.
+func syncWithCloud(ctx context.Context, database *activeso.Sync) error {
 	// Initialize Variables
 	err := database.Sync(ctx)
 
 	if err != nil {
-		log.Printf("sync with Turso Cloud failed: %v", err)
+		return err
 	}
+
+	return nil
 }
 
-// syncPeriodically keeps the local replica current with changes other clients make and retries any push
-// that failed after a write, until ctx ends.
-func syncPeriodically(ctx context.Context, database *activeso.Sync, interval time.Duration) {
+// syncFailureMessage tells the user a sync failed and that their changes are safe locally, so they can decide when to retry.
+func syncFailureMessage(err error) string {
 	// Initialize Variables
-	ticker := time.NewTicker(interval)
+	message := "Syncing with Turso Cloud failed: " + err.Error() + ". Your changes are saved locally; use Sync now to retry."
 
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := database.Sync(ctx); err != nil {
-				log.Printf("sync with Turso Cloud failed: %v", err)
-			}
-		}
-	}
+	return message
 }
 
 // main opens a local database synced with Turso Cloud and starts the Echo example server.
@@ -182,11 +174,6 @@ func main() {
 	defer database.Close()
 	db := database.DB()
 
-	// Sync in the background so pages reflect other clients' changes and failed pushes are retried.
-	syncContext, stopSyncing := context.WithCancel(ctx)
-	defer stopSyncing()
-	go syncPeriodically(syncContext, database, 15*time.Second)
-
 	// Initialize ActiveSo Model
 	userModel := activeso.Model[User](db)
 
@@ -203,6 +190,25 @@ func main() {
 	// Verify reports any drift between the table and the User hints without changing the database.
 	if err := userModel.Verify(ctx); err != nil {
 		log.Fatal(err)
+	}
+
+	// finishWrite syncs after a write and redirects home, or shows the failure so the user decides whether to retry.
+	finishWrite := func(c *echo.Context) error {
+		// Initialize Variables
+		ctx := c.Request().Context()
+		syncErr := syncWithCloud(ctx, database)
+
+		if syncErr == nil {
+			return c.Redirect(http.StatusSeeOther, "/")
+		}
+
+		// The write already succeeded locally, so show the page with the sync error rather than an error status.
+		users, listErr := userModel.All(ctx)
+		if listErr != nil {
+			return listErr
+		}
+
+		return renderPage(c, users, nil, syncFailureMessage(syncErr))
 	}
 
 	// Initialize the Echo server.
@@ -256,10 +262,11 @@ func main() {
 		if _, err := userModel.Create(ctx, User{Email: email}); err != nil {
 			return err
 		}
-		publish(ctx, database)
-
-		// Redirect to the home page.
-		return c.Redirect(http.StatusSeeOther, "/")
+		return finishWrite(c)
+	})
+	e.POST("/sync", func(c *echo.Context) error {
+		// Sync on demand so the user decides when to retry after a failure.
+		return finishWrite(c)
 	})
 	e.POST("/users/batch", func(c *echo.Context) error {
 		// Initialize Variables
@@ -287,10 +294,7 @@ func main() {
 			}
 			return err
 		}
-		publish(ctx, database)
-
-		// Redirect to the home page.
-		return c.Redirect(http.StatusSeeOther, "/")
+		return finishWrite(c)
 	})
 	e.POST("/users/:id", func(c *echo.Context) error {
 		// Initialize Variables
@@ -315,10 +319,7 @@ func main() {
 		if err := user.Save(ctx); err != nil {
 			return err
 		}
-		publish(ctx, database)
-
-		// Redirect to the home page.
-		return c.Redirect(http.StatusSeeOther, "/")
+		return finishWrite(c)
 	})
 	e.POST("/users/:id/delete", func(c *echo.Context) error {
 		// Initialize Variables
@@ -336,9 +337,9 @@ func main() {
 		if err := user.Delete(ctx); err != nil {
 			return err
 		}
-		publish(ctx, database)
 
-		return c.Redirect(http.StatusSeeOther, "/")
+		// Sync, then redirect home.
+		return finishWrite(c)
 	})
 
 	// Start the Echo server on port 8080.
