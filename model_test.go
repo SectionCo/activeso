@@ -260,6 +260,68 @@ const usersSchema = `CREATE TABLE users (
 );
 CREATE UNIQUE INDEX users_email_unique ON users (email);`
 
+// TestModelReadsNullVector verifies every read path loads a row whose Vector32 column is NULL as a nil vector.
+func TestModelReadsNullVector(t *testing.T) {
+	// Initialize Variables
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	userModel := Model[User](db)
+	inputVector := Vector32{0.12, -0.08, 0.63}
+
+	execStatements(t, db, usersSchema)
+	empty, err := userModel.Create(ctx, User{Email: "empty@null.live"})
+	if err != nil {
+		t.Fatalf("Create() without a vector error = %v", err)
+	}
+	full, err := userModel.Create(ctx, User{Email: "full@null.live", Embedding: inputVector})
+	if err != nil {
+		t.Fatalf("Create() with a vector error = %v", err)
+	}
+
+	// Find and FindBy return the NULL row with a nil vector.
+	found, err := userModel.Find(ctx, empty.ID)
+	if err != nil {
+		t.Fatalf("Find() error = %v", err)
+	}
+	if found.Embedding != nil {
+		t.Fatalf("Find() embedding = %#v, want nil", found.Embedding)
+	}
+	byEmail, err := userModel.FindBy(ctx, "email", "empty@null.live")
+	if err != nil || len(byEmail) != 1 || byEmail[0].Embedding != nil {
+		t.Fatalf("FindBy() = %#v; error = %v", byEmail, err)
+	}
+
+	// All and First read NULL and non-NULL vectors in the same result set.
+	everyone, err := userModel.Where("1 = 1").OrderBy("email ASC").All(ctx)
+	if err != nil {
+		t.Fatalf("All() error = %v", err)
+	}
+	if len(everyone) != 2 || everyone[0].Embedding != nil || !reflect.DeepEqual(everyone[1].Embedding, inputVector) {
+		t.Fatalf("All() = %#v, want a nil vector then %#v", everyone, inputVector)
+	}
+	first, err := userModel.Where("id = ?", empty.ID).First(ctx)
+	if err != nil || first.Embedding != nil {
+		t.Fatalf("First() = %#v; error = %v", first, err)
+	}
+
+	// Saving a nil vector keeps the column NULL and the row readable, and setting one round-trips.
+	found.Email = "renamed@null.live"
+	if err := found.Save(ctx); err != nil {
+		t.Fatalf("Save() with a nil vector error = %v", err)
+	}
+	found.Embedding = inputVector
+	if err := found.Save(ctx); err != nil {
+		t.Fatalf("Save() with a vector error = %v", err)
+	}
+	reloaded, err := userModel.Find(ctx, empty.ID)
+	if err != nil || !reflect.DeepEqual(reloaded.Embedding, inputVector) {
+		t.Fatalf("Find() after Save() = %#v; error = %v", reloaded, err)
+	}
+	if _, err := userModel.Find(ctx, full.ID); err != nil {
+		t.Fatalf("Find() full row error = %v", err)
+	}
+}
+
 // TestModelLifecycle verifies create, query, update, delete, and vector persistence with Turso.
 func TestModelLifecycle(t *testing.T) {
 	// Initialize Variables
