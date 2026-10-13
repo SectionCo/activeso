@@ -24,6 +24,7 @@ The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with 
 - Finding a user with `userModel.Find(ctx, id)` via the find form.
 - Updating a bound record with `user.Save(ctx)`.
 - Deleting a bound record with `user.Delete(ctx)`.
+- Creating several users in one transaction with `userModel.CreateTx(ctx, tx, User{...})`: the example begins and commits the transaction itself, and a duplicate email rolls back the whole batch.
 
 ## Routes
 
@@ -32,6 +33,7 @@ The example uses `activeso.OpenSync` to sync `example/activeso-example.db` with 
 | `GET` | `/` | Renders the create form, find form, and existing users. |
 | `GET` | `/users/find` | Finds a user by ID from the `id` query parameter and renders the page with the result or a message. |
 | `POST` | `/users` | Creates a user from an email address. |
+| `POST` | `/users/batch` | Creates one user per line of the `emails` field in a single transaction; if any fails, none are saved. |
 | `POST` | `/users/:id` | Updates a user's email address. |
 | `POST` | `/users/:id/delete` | Deletes a user. |
 

@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"html/template"
 	"log"
@@ -52,7 +53,7 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 	<style>
 		body { font-family: system-ui, sans-serif; max-width: 44rem; margin: 3rem auto; padding: 0 1rem; }
 		form { display: flex; gap: .5rem; align-items: center; margin: .75rem 0; }
-		input { flex: 1; padding: .5rem; }
+		input, textarea { flex: 1; padding: .5rem; font: inherit; }
 		button { padding: .5rem .75rem; cursor: pointer; }
 		.delete { background: #b42318; color: white; border: 0; }
 		.message { color: #b42318; }
@@ -64,6 +65,10 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 	<form action="/users" method="post">
 		<input name="email" type="email" placeholder="hello@null.live" required>
 		<button type="submit">Create user</button>
+	</form>
+	<form action="/users/batch" method="post">
+		<textarea name="emails" rows="3" placeholder="One email per line; all are created together or none are" required></textarea>
+		<button type="submit">Create all</button>
 	</form>
 	<form action="/users/find" method="get">
 		<input name="id" type="text" placeholder="User ID" required>
@@ -94,6 +99,34 @@ var page = template.Must(template.New("users").Parse(`<!doctype html>
 	{{end}}
 </body>
 </html>`))
+
+// userCreator creates a user on a caller-owned transaction; the model returned by activeso.Model satisfies it.
+type userCreator interface {
+	CreateTx(ctx context.Context, tx activeso.Executor, value User) (*User, error)
+}
+
+// createUsers creates every email in one transaction, so either all users are saved or none are.
+// ActiveSo never begins or ends a transaction: this function owns Begin, Commit, and Rollback.
+func createUsers(ctx context.Context, db *sql.DB, users userCreator, emails []string) error {
+	// Initialize Variables
+	tx, err := db.BeginTx(ctx, nil)
+
+	if err != nil {
+		return err
+	}
+
+	// Roll back on any early return; after a successful Commit this is a harmless no-op.
+	defer tx.Rollback()
+
+	// CreateTx runs each insert on the transaction, so a duplicate email undoes the earlier ones too.
+	for _, email := range emails {
+		if _, err := users.CreateTx(ctx, tx, User{Email: email}); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
 
 // publish syncs with Turso Cloud after a write, pulling remote changes and pushing local ones. The write
 // already succeeded locally, so a failed sync is logged and left for the next one.
@@ -221,6 +254,37 @@ func main() {
 
 		// Create a new user.
 		if _, err := userModel.Create(ctx, User{Email: email}); err != nil {
+			return err
+		}
+		publish(ctx, database)
+
+		// Redirect to the home page.
+		return c.Redirect(http.StatusSeeOther, "/")
+	})
+	e.POST("/users/batch", func(c *echo.Context) error {
+		// Initialize Variables
+		ctx := c.Request().Context()
+		emails := []string{}
+
+		// Read one email per line, skipping blanks.
+		for _, line := range strings.Split(c.FormValue("emails"), "\n") {
+			if email := strings.TrimSpace(line); email != "" {
+				emails = append(emails, email)
+			}
+		}
+		if len(emails) == 0 {
+			return c.String(http.StatusBadRequest, "at least one email is required")
+		}
+
+		// Create every user in a single transaction.
+		if err := createUsers(ctx, db, userModel, emails); err != nil {
+			if errors.Is(err, activeso.ErrUnique) {
+				users, listErr := userModel.All(ctx)
+				if listErr != nil {
+					return listErr
+				}
+				return renderPage(c, users, nil, "No users were added: one of those emails already exists.")
+			}
 			return err
 		}
 		publish(ctx, database)
