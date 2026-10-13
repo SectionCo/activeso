@@ -22,7 +22,7 @@ var ErrSyncBusy = errors.New("activeso: sync handle has connections in use")
 type SyncConfig struct {
 	// Path is the local database file that models read and write.
 	Path string
-	// RemoteURL is the Turso Cloud database URL, for example "libsql://my-db-org.turso.io".
+	// RemoteURL is the Turso Cloud database URL, for example "turso://my-db-my-org.aws-us-east-1.turso.io".
 	RemoteURL string
 	// AuthToken authenticates against the remote. Pass the bare token, without a "Bearer " prefix.
 	AuthToken string

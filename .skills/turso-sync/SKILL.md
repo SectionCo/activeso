@@ -5,6 +5,7 @@
 ## Config and semantics
 
 - `SyncConfig` is ActiveSo's own struct (field `RemoteURL`, not the SDK's `RemoteUrl`). `Path` and `RemoteURL` are required; `OpenSync` rejects empty values before touching the SDK. `SkipBootstrap` maps to the SDK's `BootstrapIfEmpty=false`.
+- `RemoteURL` docs and examples use the `turso://<db>-<org>.<region>.turso.io` form. The SDK (`normalizeUrl` in `driver_sync.go`, v0.8.2) rewrites `turso://` and `libsql://` to `https://` and leaves `http://` alone, so older `libsql://` URLs still work. Use `turso://` in new docs, not `libsql://` or `https://`.
 - `Pull` fetches remote changes and rebases local ones on top; it sends nothing. `Push` sends local changes; it fetches nothing. `Sync` is `Pull` then `Push`. `Checkpoint` compacts the local WAL (SDK `Checkpoint`); callers should run it periodically on long-lived replicas. `Stats` returns the SDK's `TursoSyncDbStats` (aliased as `SyncStats`); `CdcOperations` counts local operations written since the last `Pull` (per the SDK); it is not a count of unpushed writes and does not reset on `Push`.
 - ActiveSo never pushes on its own. Model writes stay local until the caller pushes.
 - Users own the schema on the cloud database as well; ActiveSo never creates or alters tables. Use `Verify` to catch drift, including after a `Pull`.

@@ -9,7 +9,7 @@ The example and parent ActiveSo module pin `turso.tech/database/tursogo` and its
 From the repository root:
 
 ```sh
-TURSO_DATABASE_URL=libsql://my-db-org.turso.io TURSO_AUTH_TOKEN=... go -C example run .
+TURSO_DATABASE_URL=turso://my-db-my-org.aws-us-east-1.turso.io TURSO_AUTH_TOKEN=... go -C example run .
 ```
 
 Open [http://localhost:8080](http://localhost:8080).
