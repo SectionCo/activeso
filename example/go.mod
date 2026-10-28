@@ -3,9 +3,8 @@ module github.com/sectionco/activeso/example
 go 1.25.0
 
 require (
-	github.com/labstack/echo/v5 v5.3.1
+	github.com/labstack/echo/v5 v5.4.1
 	github.com/sectionco/activeso/v2 v2.0.0
-	turso.tech/database/tursogo v0.8.2
 )
 
 require (
@@ -13,6 +12,7 @@ require (
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/tursodatabase/turso-go-platform-libs v0.8.2 // indirect
 	golang.org/x/sys v0.38.0 // indirect
+	turso.tech/database/tursogo v0.8.2 // indirect
 )
 
 replace github.com/sectionco/activeso/v2 => ..
