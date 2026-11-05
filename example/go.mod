@@ -10,9 +10,9 @@ require (
 require (
 	github.com/ebitengine/purego v0.9.1 // indirect
 	github.com/gobuffalo/flect v1.0.3 // indirect
-	github.com/tursodatabase/turso-go-platform-libs v0.8.2 // indirect
+	github.com/tursodatabase/turso-go-platform-libs v0.8.3 // indirect
 	golang.org/x/sys v0.38.0 // indirect
-	turso.tech/database/tursogo v0.8.2 // indirect
+	turso.tech/database/tursogo v0.8.3 // indirect
 )
 
 replace github.com/sectionco/activeso/v2 => ..
